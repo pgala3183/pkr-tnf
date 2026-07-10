@@ -99,7 +99,7 @@ def test_triton_and_pytorch_backward_match() -> None:
         y = fused_residual_layernorm(
             x_t, residual_t, weight_t, bias_t, EPS, use_triton=use_triton
         )
-        torch.autograd.grad(y, (x_t, residual_t, weight_t, bias_t), grad_output)
+        return torch.autograd.grad(y, (x_t, residual_t, weight_t, bias_t), grad_output)
 
     ref_grads = grads(use_triton=False)
     triton_grads = grads(use_triton=True)
