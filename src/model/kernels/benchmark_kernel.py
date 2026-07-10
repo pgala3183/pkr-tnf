@@ -29,14 +29,20 @@ WARMUP_ITERS = 20
 TIMED_ITERS = 100
 
 
-def _time_fn(fn, *args, warmup: int = WARMUP_ITERS, iters: int = TIMED_ITERS) -> float:
+def _time_fn(
+    fn,
+    *args,
+    warmup: int = WARMUP_ITERS,
+    iters: int = TIMED_ITERS,
+    **kwargs,
+) -> float:
     for _ in range(warmup):
-        fn(*args)
+        fn(*args, **kwargs)
     torch.cuda.synchronize()
 
     start = time.perf_counter()
     for _ in range(iters):
-        fn(*args)
+        fn(*args, **kwargs)
     torch.cuda.synchronize()
     return (time.perf_counter() - start) / iters * 1e3  # ms per iter
 
