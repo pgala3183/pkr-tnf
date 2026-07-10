@@ -17,12 +17,15 @@ from poker_transformer.model.kernels.fused_residual_layernorm import (
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_OUTPUT = PROJECT_ROOT / "eval" / "results" / "kernel_benchmark.png"
 
-# Shapes representative of poker-transformer training batches.
+# Shapes representative of poker-transformer training batches, plus larger
+# batches to show where kernel fusion amortizes launch overhead.
 BENCHMARK_SHAPES: list[tuple[int, int, int]] = [
     (4, 32, 256),
     (8, 64, 256),
     (16, 128, 256),
     (32, 256, 256),
+    (64, 256, 256),
+    (128, 256, 256),
 ]
 
 WARMUP_ITERS = 20

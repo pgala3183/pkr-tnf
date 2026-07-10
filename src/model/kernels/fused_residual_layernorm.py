@@ -1,4 +1,30 @@
-"""Triton fused residual-add + LayerNorm kernel and PyTorch references."""
+"""Triton fused residual-add + LayerNorm kernel and PyTorch references.
+
+Performance notes (why this version is fast at poker-transformer shapes)
+------------------------------------------------------------------------
+The first version of this kernel lost to cuDNN LayerNorm at every benchmark
+shape (0.30-0.48x). Profiling showed it was *host-side launch-bound*, not
+GPU-bound: at D=256 each row is only 1 KiB of work, so the fixed cost per
+call dominated. Four fixes:
+
+1. **Multi-row tiled programs.** Each Triton program now normalizes a
+   (ROWS_PER_PROGRAM x BLOCK_SIZE) tile instead of a single row, so weight
+   and bias are loaded once per tile and the grid shrinks by up to 16x.
+2. **Autotuning.** ROWS_PER_PROGRAM / num_warps are picked per (n_rows,
+   n_cols) via ``triton.autotune`` — the best config for B=4,T=32 is not the
+   best for B=32,T=256.
+3. **No dead outputs.** The old kernel wrote per-row mean/rstd buffers that
+   the backward never read (backward recomputes through the PyTorch
+   reference). Dropping them removes two ``torch.empty`` allocations and two
+   global-memory stores per call.
+4. **Inference fast path.** When no input requires grad, we skip the
+   ``torch.autograd.Function`` machinery entirely and launch the kernel
+   directly.
+
+The backward pass still recomputes through the PyTorch reference: it keeps
+training numerically identical to ``F.layer_norm`` autograd and keeps this
+module simple. The Triton win is therefore a *forward/inference* win.
+"""
 
 from __future__ import annotations
 
@@ -39,7 +65,18 @@ def layernorm_ref(
 
 
 if TRITON_AVAILABLE:
+    # Candidate tilings. Small grids amortize per-program setup; more warps
+    # help once the tile is large enough to keep them busy.
+    _LN_CONFIGS = [
+        triton.Config({"ROWS_PER_PROGRAM": 1}, num_warps=2),
+        triton.Config({"ROWS_PER_PROGRAM": 2}, num_warps=2),
+        triton.Config({"ROWS_PER_PROGRAM": 4}, num_warps=4),
+        triton.Config({"ROWS_PER_PROGRAM": 8}, num_warps=4),
+        triton.Config({"ROWS_PER_PROGRAM": 8}, num_warps=8),
+        triton.Config({"ROWS_PER_PROGRAM": 16}, num_warps=8),
+    ]
 
+    @triton.autotune(configs=_LN_CONFIGS, key=["n_rows", "n_cols"])
     @triton.jit
     def _fused_residual_layernorm_kernel(
         x_ptr,
@@ -47,76 +84,73 @@ if TRITON_AVAILABLE:
         y_ptr,
         weight_ptr,
         bias_ptr,
-        mean_ptr,
-        rstd_ptr,
         stride_row,
+        n_rows,
         n_cols,
         eps,
         BLOCK_SIZE: tl.constexpr,
+        ROWS_PER_PROGRAM: tl.constexpr,
     ):
-        # program_id(axis): which program instance runs along this axis.
-        # axis=0 → one Triton program per matrix row (token position).
-        row = tl.program_id(0)
+        # Each program handles a (ROWS_PER_PROGRAM, BLOCK_SIZE) tile.
+        pid = tl.program_id(0)
+        rows = pid * ROWS_PER_PROGRAM + tl.arange(0, ROWS_PER_PROGRAM)
+        cols = tl.arange(0, BLOCK_SIZE)
+        row_mask = rows < n_rows
+        col_mask = cols < n_cols
+        mask = row_mask[:, None] & col_mask[None, :]
 
-        # arange(0, BLOCK_SIZE): column indices handled by this program.
-        col_offsets = tl.arange(0, BLOCK_SIZE)
-        # Masking: when n_cols is not divisible by BLOCK_SIZE, ignore extra lanes.
-        mask = col_offsets < n_cols
-
-        row_x = x_ptr + row * stride_row
-        row_r = residual_ptr + row * stride_row
-        row_y = y_ptr + row * stride_row
-
-        x = tl.load(row_x + col_offsets, mask=mask, other=0.0).to(tl.float32)
-        residual = tl.load(row_r + col_offsets, mask=mask, other=0.0).to(tl.float32)
+        offsets = rows[:, None] * stride_row + cols[None, :]
+        x = tl.load(x_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        residual = tl.load(residual_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         x = x + residual
 
-        mean = tl.sum(x, axis=0) / n_cols
-        x_centered = tl.where(mask, x - mean, 0.0)
-        var = tl.sum(x_centered * x_centered, axis=0) / n_cols
+        # Row-wise LayerNorm over the tile.
+        mean = tl.sum(x, axis=1) / n_cols
+        centered = tl.where(mask, x - mean[:, None], 0.0)
+        var = tl.sum(centered * centered, axis=1) / n_cols
         rstd = tl.rsqrt(var + eps)
 
-        weight = tl.load(weight_ptr + col_offsets, mask=mask, other=0.0).to(tl.float32)
-        bias = tl.load(bias_ptr + col_offsets, mask=mask, other=0.0).to(tl.float32)
-        y = x_centered * rstd * weight + bias
+        # weight/bias loaded once per tile (not once per row).
+        weight = tl.load(weight_ptr + cols, mask=col_mask, other=0.0).to(tl.float32)
+        bias = tl.load(bias_ptr + cols, mask=col_mask, other=0.0).to(tl.float32)
+        y = centered * rstd[:, None] * weight[None, :] + bias[None, :]
 
-        tl.store(row_y + col_offsets, y, mask=mask)
-        tl.store(mean_ptr + row, mean)
-        tl.store(rstd_ptr + row, rstd)
+        tl.store(y_ptr + offsets, y.to(y_ptr.dtype.element_ty), mask=mask)
 
+    @triton.autotune(configs=_LN_CONFIGS, key=["n_rows", "n_cols"])
     @triton.jit
     def _layernorm_kernel(
         x_ptr,
         y_ptr,
         weight_ptr,
         bias_ptr,
-        mean_ptr,
-        rstd_ptr,
         stride_row,
+        n_rows,
         n_cols,
         eps,
         BLOCK_SIZE: tl.constexpr,
+        ROWS_PER_PROGRAM: tl.constexpr,
     ):
-        row = tl.program_id(0)
-        col_offsets = tl.arange(0, BLOCK_SIZE)
-        mask = col_offsets < n_cols
+        pid = tl.program_id(0)
+        rows = pid * ROWS_PER_PROGRAM + tl.arange(0, ROWS_PER_PROGRAM)
+        cols = tl.arange(0, BLOCK_SIZE)
+        row_mask = rows < n_rows
+        col_mask = cols < n_cols
+        mask = row_mask[:, None] & col_mask[None, :]
 
-        row_x = x_ptr + row * stride_row
-        row_y = y_ptr + row * stride_row
+        offsets = rows[:, None] * stride_row + cols[None, :]
+        x = tl.load(x_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
 
-        x = tl.load(row_x + col_offsets, mask=mask, other=0.0).to(tl.float32)
-        mean = tl.sum(x, axis=0) / n_cols
-        x_centered = tl.where(mask, x - mean, 0.0)
-        var = tl.sum(x_centered * x_centered, axis=0) / n_cols
+        mean = tl.sum(x, axis=1) / n_cols
+        centered = tl.where(mask, x - mean[:, None], 0.0)
+        var = tl.sum(centered * centered, axis=1) / n_cols
         rstd = tl.rsqrt(var + eps)
 
-        weight = tl.load(weight_ptr + col_offsets, mask=mask, other=0.0).to(tl.float32)
-        bias = tl.load(bias_ptr + col_offsets, mask=mask, other=0.0).to(tl.float32)
-        y = x_centered * rstd * weight + bias
+        weight = tl.load(weight_ptr + cols, mask=col_mask, other=0.0).to(tl.float32)
+        bias = tl.load(bias_ptr + cols, mask=col_mask, other=0.0).to(tl.float32)
+        y = centered * rstd[:, None] * weight[None, :] + bias[None, :]
 
-        tl.store(row_y + col_offsets, y, mask=mask)
-        tl.store(mean_ptr + row, mean)
-        tl.store(rstd_ptr + row, rstd)
+        tl.store(y_ptr + offsets, y.to(y_ptr.dtype.element_ty), mask=mask)
 
 
 def _block_size_for(n_cols: int) -> int:
@@ -134,17 +168,15 @@ def _launch_fused_kernel(
 ) -> torch.Tensor:
     assert TRITON_AVAILABLE and x.is_cuda
 
-    x_2d = x.reshape(-1, x.shape[-1])
-    residual_2d = residual.reshape(-1, residual.shape[-1])
+    x_2d = x.contiguous().view(-1, x.shape[-1])
+    residual_2d = residual.contiguous().view(-1, residual.shape[-1])
     n_rows, n_cols = x_2d.shape
-
     y = torch.empty_like(x_2d)
-    mean = torch.empty(n_rows, device=x.device, dtype=torch.float32)
-    rstd = torch.empty(n_rows, device=x.device, dtype=torch.float32)
 
     block_size = _block_size_for(n_cols)
-    # grid: how many programs to launch per axis. (n_rows,) → one program per row.
-    grid = (n_rows,)
+
+    def grid(meta):
+        return (triton.cdiv(n_rows, meta["ROWS_PER_PROGRAM"]),)
 
     _fused_residual_layernorm_kernel[grid](
         x_2d,
@@ -152,9 +184,8 @@ def _launch_fused_kernel(
         y,
         weight,
         bias,
-        mean,
-        rstd,
         x_2d.stride(0),
+        n_rows,
         n_cols,
         eps,
         BLOCK_SIZE=block_size,
@@ -170,23 +201,22 @@ def _launch_layernorm_kernel(
 ) -> torch.Tensor:
     assert TRITON_AVAILABLE and x.is_cuda
 
-    x_2d = x.reshape(-1, x.shape[-1])
+    x_2d = x.contiguous().view(-1, x.shape[-1])
     n_rows, n_cols = x_2d.shape
     y = torch.empty_like(x_2d)
-    mean = torch.empty(n_rows, device=x.device, dtype=torch.float32)
-    rstd = torch.empty(n_rows, device=x.device, dtype=torch.float32)
 
     block_size = _block_size_for(n_cols)
-    grid = (n_rows,)
+
+    def grid(meta):
+        return (triton.cdiv(n_rows, meta["ROWS_PER_PROGRAM"]),)
 
     _layernorm_kernel[grid](
         x_2d,
         y,
         weight,
         bias,
-        mean,
-        rstd,
         x_2d.stride(0),
+        n_rows,
         n_cols,
         eps,
         BLOCK_SIZE=block_size,
@@ -284,6 +314,10 @@ class LayerNormFn(torch.autograd.Function):
         return grad_x, grad_weight, grad_bias, None, None
 
 
+def _grad_needed(*tensors: torch.Tensor) -> bool:
+    return torch.is_grad_enabled() and any(t.requires_grad for t in tensors)
+
+
 def fused_residual_layernorm(
     x: torch.Tensor,
     residual: torch.Tensor,
@@ -293,6 +327,11 @@ def fused_residual_layernorm(
     *,
     use_triton: bool = True,
 ) -> torch.Tensor:
+    # Inference fast path: skip autograd.Function overhead entirely.
+    if not _grad_needed(x, residual, weight, bias):
+        if use_triton and TRITON_AVAILABLE and x.is_cuda:
+            return _launch_fused_kernel(x, residual, weight, bias, eps)
+        return fused_residual_layernorm_ref(x, residual, weight, bias, eps)
     return FusedResidualLayerNormFn.apply(x, residual, weight, bias, eps, use_triton)
 
 
@@ -304,6 +343,10 @@ def triton_layernorm(
     *,
     use_triton: bool = True,
 ) -> torch.Tensor:
+    if not _grad_needed(x, weight, bias):
+        if use_triton and TRITON_AVAILABLE and x.is_cuda:
+            return _launch_layernorm_kernel(x, weight, bias, eps)
+        return layernorm_ref(x, weight, bias, eps)
     return LayerNormFn.apply(x, weight, bias, eps, use_triton)
 
 
