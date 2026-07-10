@@ -100,7 +100,16 @@ Win rates vs baseline bots (bb/100, hero = Transformer). Values are read from [`
 # python -m poker_transformer.eval.rollout --checkpoint checkpoints/best.pt --hands 10000
 ```
 
-> Smoke-test integration (`tests/test_transformer_player.py`) confirms 20-round games vs `FishPlayer` complete without errors; win-rate numbers require a full trained checkpoint and the eval harness above.
+> Smoke-test integration (`tests/test_transformer_player.py`) confirms 20-round games vs `FishPlayer` complete without errors; win-rate numbers require the eval harness above.
+
+**Trained checkpoint (step 4800, L4, 5000 steps @ 362 samples/s):**
+
+| Split | Action loss | Action perplexity | Value loss |
+|-------|-------------|-------------------|------------|
+| Train (45k hands) | 0.174 | 1.190 | 0.014 |
+| Val (5k hands) | 0.171 | **1.186** | 0.016 |
+
+Train/val are nearly identical — no overfitting on the self-play distribution. Perplexity 1.19 on a 235-token vocabulary means the model is near-certain about the next action most of the time; that reflects how predictable the `HonestPlayer`/`RandomPlayer` data is, which is exactly why bb/100 vs held-out bots (not loss) is the metric that matters.
 
 ---
 
@@ -122,24 +131,28 @@ python -m poker_transformer.training.profile_run \
 
 Open `logs/profiler/trace.json` in [Perfetto](https://ui.perfetto.dev/) or `chrome://tracing`.
 
-#### Top ops by GPU time (L4 — fill after VM run)
+#### Top ops by GPU time (measured on L4, 200 training steps, batch=32)
 
-| Rank | Op (CUDA) | Self CUDA time | Notes |
-|------|-----------|----------------|-------|
-| 1 | _TBD_ | _TBD_ | Run profiler on L4 and paste top 5 rows here |
-| 2 | _TBD_ | _TBD_ | |
-| 3 | _TBD_ | _TBD_ | |
+| Rank | Op (CUDA) | Self/Total CUDA time | Role |
+|------|-----------|----------------------|------|
+| 1 | `aten::masked_fill` | 2.76 s | Causal attention mask (writes 150 GB of intermediates!) |
+| 2 | `SoftmaxBackward` | 2.08 s | Attention backward |
+| 3 | `AddmmBackward` | 1.83 s | Linear-layer backward |
+| 4 | `BmmBackward` | 1.79 s | Attention matmul backward |
+| 5 | `aten::div` + elementwise kernels | ~2.8 s | Scaling / LayerNorm / dropout |
+| 6 | `ampere_sgemm_128x64` (×2 variants) | 2.68 s | Forward GEMMs (MLP + projections) |
+| 7 | `Memcpy DtoD` | 1.36 s | Tensor copies |
 
-**Expected pattern** for this architecture at batch=32: `aten::mm` / `aten::bmm` (MLP projections + attention QKV/matmul) and `aten::softmax` dominate CUDA time; `NativeLayerNormBackward` appears in the top 10 during backward. Elementwise ops (`dropout`, `gelu`, `div`) are secondary.
+**Step timing:** 95.5 ms/step avg → 10.5 steps/s → ~336 samples/s (matches the full training run's 362 samples/s). Peak GPU memory: 1.8 GiB of 24 GiB.
 
 #### Compute-bound vs memory-bound
 
-| Signal | This model (short sequences) |
-|--------|------------------------------|
-| Top CUDA ops | Matmul/attention-heavy → **lean compute-bound** on paper |
-| Achieved FLOPs/s vs L4 peak (121 TFLOP/s FP16) | _TBD_% — expect **single-digit %** at ~6.6 avg tokens/hand |
-| Arithmetic intensity | Low (small effective seq × moderate batch) → often **under-utilized**, not bandwidth-saturated |
-| Verdict | **Compute-limited by under-utilization**, not pure HBM-bound. Short poker sequences leave SMs idle between small GEMMs; weight-only int8 still helps because many layers sit in the low-intensity (memory-roof) region of the roofline. |
+| Signal | Measured on L4 |
+|--------|----------------|
+| Achieved FLOP/s | 2.87 TFLOP/s = **2.37% of L4's 121 TFLOP/s advertised FP16 peak** |
+| Top CUDA ops | GEMMs + attention math in aggregate, but `masked_fill` alone is #1 and moves 150 GB |
+| Arithmetic intensity | Low — avg hand is ~6.6 tokens, so most of the (32, 256) batch is padding |
+| Verdict | **Compute-structured but utilization-bound.** The op mix is matmul-heavy (compute-bound in shape), yet the GPU runs at 2.4% of peak because sequences are short, tensors are small, and mask/memcpy traffic pads the timeline. The fix is *more work per launch* (bigger batch — memory headroom is 13×), not faster math. |
 
 The profiler script prints `% of advertised peak` automatically when CUDA is available (`src/training/profile_run.py` maps L4 → 121e12 FLOP/s).
 
@@ -165,18 +178,26 @@ python -m poker_transformer.model.kernels.benchmark_kernel
 # → eval/results/kernel_benchmark.png
 ```
 
-#### Benchmark (L4 — fill after GPU run)
+#### Benchmark (measured on L4)
 
-| Shape (B, T, D) | PyTorch (ms) | Triton (ms) | Speedup |
-|-----------------|-------------|-------------|---------|
-| (4, 32, 256) | _TBD_ | _TBD_ | _TBD_× |
-| (8, 64, 256) | _TBD_ | _TBD_ | _TBD_× |
-| (16, 128, 256) | _TBD_ | _TBD_ | _TBD_× |
-| (32, 256, 256) | _TBD_ | _TBD_ | _TBD_× |
+Two kernel versions tell an honest optimization story. **v1** launched one Triton program per row and wrote dead `mean`/`rstd` buffers — it lost everywhere (flat ~0.09 ms floor = host dispatch overhead). **v2** uses multi-row tiled programs, `triton.autotune` over tile size / warps, no dead outputs, and a no-grad fast path that skips `autograd.Function`:
 
-![Kernel benchmark — run on CUDA to generate](eval/results/kernel_benchmark.png)
+| Shape (B, T, D) | PyTorch (ms) | Triton v1 | Triton v2 | v2 speedup |
+|-----------------|-------------|-----------|-----------|------------|
+| (4, 32, 256) | 0.028 | 0.090 | 0.079 | 0.35× |
+| (8, 64, 256) | 0.029 | 0.089 | 0.081 | 0.35× |
+| (16, 128, 256) | 0.028 | 0.090 | 0.081 | 0.34× |
+| (32, 256, 256) | 0.043 | 0.090 | 0.080 | 0.54× |
+| (64, 256, 256) | 0.248 | — | 0.080 | **3.09×** |
+| (128, 256, 256) | 0.672 | — | 0.423 | **1.59×** |
 
-LayerNorm is not the single largest CUDA op in a full step (matmuls dominate), but fusion removes **2×(6 layers × 2 sublayers) = 24** round-trips to HBM per forward pass at `n_layer=6`. Speedup compounds when the model is memory-latency sensitive at short sequence lengths.
+![Kernel benchmark](eval/results/kernel_benchmark.png)
+
+**Takeaways:**
+
+- Below ~8k rows, both implementations are dominated by fixed per-call cost; cuDNN's two cheap launches (~0.028 ms) beat Triton's Python-side dispatch (~0.080 ms floor). No amount of kernel tuning fixes host overhead.
+- At 16k+ rows (batch ≥ 64) the fused kernel wins big — **3.09×** at B=64 — because one fused pass replaces add + LayerNorm and stays flat while cuDNN's cost scales.
+- Conclusion for this model: at the current training batch (32), keep `use_triton_kernels: false`; at batch ≥ 64 (which the 2.4% GPU utilization argues for anyway) the Triton path is the faster one.
 
 ### 8.5 — Quantization internals (accuracy vs speed)
 
@@ -203,14 +224,14 @@ Per-channel wins because output rows have different weight ranges (scales 3.49e-
 
 Hand-rolled int8 saves **4× weight storage** but not GEMM time because PyTorch still dequantizes to fp32 before `F.linear`. ORT uses specialized int8 kernels.
 
-#### Full-model ONNX (CPU, smoke checkpoint)
+#### Full-model ONNX (trained checkpoint, step 4800, CPU execution provider)
 
-| Model | Size | Mean latency | vs fp32 |
-|-------|------|--------------|---------|
-| fp32 ONNX | 19.30 MB | 5.14 ms | 1.00× |
-| int8 dynamic ONNX | 5.14 MB (**−73%**) | 4.29 ms | **1.20×** |
+| Model | Size | Mean latency | p95 | vs fp32 |
+|-------|------|--------------|-----|---------|
+| fp32 ONNX | 19.34 MB | 6.16 ms | 10.64 ms | 1.00× |
+| int8 dynamic ONNX | 5.19 MB (**−73%**) | 4.06 ms | 7.03 ms | **1.51×** |
 
-Relative to a naive "4× smaller weights → 4× faster" expectation, **1.20× end-to-end** is modest because attention and elementwise ops remain fp32. On GPU EPs with bandwidth-bound linear layers, the gap should widen.
+Relative to a naive "4× smaller weights → 4× faster" expectation, **1.51× end-to-end** reflects that attention and elementwise ops remain fp32; only the linear-layer GEMMs benefit from int8 weight compression. (An earlier smoke run with an untrained checkpoint on a dev laptop measured 1.20× — the VM's CPU int8 paths do better.)
 
 ```bash
 python -m poker_transformer.serving.quantization_demo --checkpoint checkpoints/best.pt
@@ -233,9 +254,9 @@ $$\text{scaling\_efficiency} = \frac{\text{aggregate samples/s}}{N \times \text{
 
 | GPUs (N) | Per-GPU samples/s | Aggregate samples/s | Scaling efficiency | Notes |
 |----------|-------------------|---------------------|--------------------|-------|
-| 1 | _TBD_ | _TBD_ | 100% (by definition) | Baseline |
-| 2 | _TBD_ | _TBD_ | _TBD_% | |
-| 4 | _TBD_ | _TBD_ | _TBD_% | |
+| 1 (L4) | **362** | 362 | 100% (by definition) | Measured, 5000-step run |
+| 2 | _TBD_ | _TBD_ | _TBD_% | Requires multi-GPU instance |
+| 4 | _TBD_ | _TBD_ | _TBD_% | Requires multi-GPU instance |
 
 Ideal efficiency is 100%; real runs drop due to NCCL all-reduce latency, gradient sync bubbles, and dataloader overhead. DDP hooks all-reduce gradient buckets during `loss.backward()` (see comments in `src/training/distributed.py`).
 
@@ -254,7 +275,9 @@ Structured template — fill in commit SHAs and details as the project matures.
 | 5 | ONNX validation shape mismatch | Sample export tensor was 2D vs model's 3D hidden states | Fixed sample input shapes in export script | _TBD_ |
 | 6 | DDP checkpoint unwrap failed in tests | `unwrap_model` assumed real DDP wrapper | Guard with `hasattr(model, "module")` | _TBD_ |
 | 7 | Demo blinds ≠ training blinds | Web app uses SB=25/BB=50; self-play uses BB=20 | Document mismatch; map stacks in `demo_adapter` | _TBD_ |
-| 8 | _Your next bug_ | | | |
+| 8 | Kernel benchmark crashed with `TypeError` | `_time_fn` didn't forward `use_triton` kwarg | Forward `**kwargs` to the timed function | `00664b8` |
+| 9 | Triton kernel lost to cuDNN at all shapes (0.30×) | One program per row + dead `mean`/`rstd` writes + autograd overhead → launch-bound | Multi-row tiled programs, autotune, no-grad fast path → 3.09× at B=64 | `dc7b189` |
+| 10 | Kernel backward test compared `None` to `None` | Test helper computed grads but never returned them | Add missing `return` | `35f77ae` |
 
 ---
 
