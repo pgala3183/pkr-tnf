@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -76,6 +75,8 @@ class CausalSelfAttention(nn.Module):
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
 
+        # Kept only for checkpoint compatibility: older checkpoints contain
+        # this buffer in their state_dict. Forward uses SDPA's is_causal.
         mask = torch.tril(torch.ones(config.block_size, config.block_size))
         self.register_buffer("causal_mask", mask.view(1, 1, config.block_size, config.block_size))
 
@@ -89,12 +90,18 @@ class CausalSelfAttention(nn.Module):
         k = k.view(*shape).transpose(1, 2)
         v = v.view(*shape).transpose(1, 2)
 
-        attn = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_size)
-        attn = attn.masked_fill(self.causal_mask[:, :, :seq_len, :seq_len] == 0, float("-inf"))
-        attn = F.softmax(attn, dim=-1)
-        attn = self.attn_dropout(attn)
-
-        out = attn @ v
+        # Fused attention (FlashAttention / mem-efficient backends on CUDA).
+        # Replaces the manual masked_fill -> softmax -> dropout -> matmul
+        # chain, which materialized (B, heads, T, T) score tensors — the
+        # profiler's #1 GPU op (150 GB of mask traffic over 200 steps on L4).
+        # Same math as before, so existing checkpoints remain compatible.
+        out = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            dropout_p=self.attn_dropout.p if self.training else 0.0,
+            is_causal=True,
+        )
         out = out.transpose(1, 2).contiguous().view(batch_size, seq_len, channels)
         out = self.proj(out)
         return self.resid_dropout(out)
