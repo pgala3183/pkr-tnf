@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "poker-transformer"
+version = "0.1.0"
+description = "Transformer-based poker agent trained on hand histories"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "numpy",
+    "pypokerengine",
+    "fastapi",
+    "uvicorn",
+    "onnx",
+    "onnxruntime",
+    "pyyaml",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+logging = ["wandb"]
+
+[tool.setuptools.package-dir]
+"poker_transformer" = "src"
+
+[tool.setuptools]
+packages = [
+    "poker_transformer",
+    "poker_transformer.tokenizer",
+    "poker_transformer.model",
+    "poker_transformer.training",
+    "poker_transformer.engine_integration",
+    "poker_transformer.eval",
+    "poker_transformer.serving",
+    "poker_transformer.utils",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

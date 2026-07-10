@@ -1,0 +1,11 @@
+torch
+numpy
+pypokerengine
+fastapi
+uvicorn
+onnx
+onnxruntime
+pyyaml
+tqdm
+pytest
+wandb  # optional, for logging
