@@ -1,0 +1,15 @@
+# Decoder-only poker action model hyperparameters.
+
+n_layer: 6
+n_head: 8
+n_embd: 256
+block_size: 256
+dropout: 0.1
+vocab_size: 235  # must match tokenizer vocabulary size
+
+# MLP expansion ratio inside each transformer block.
+mlp_ratio: 4
+
+# Use Triton fused residual+LayerNorm kernels in transformer blocks (Post-LN path).
+# When false, uses the original Pre-LN PyTorch implementation.
+use_triton_kernels: false

@@ -1,0 +1,354 @@
+body {
+    margin: 0;
+    padding: 0;
+    height: 100vh;
+    overflow: hidden;
+    font-family: 'Orbitron', sans-serif;
+}
+
+#rotateMessage{
+    display: none;
+}
+
+
+#container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+
+    background-image: url("../static/image/game_bcg.png");
+    background-size: cover;
+    background-position: center;
+}
+
+#poker-table {
+    width: 70%;
+    height: 70vh;
+    margin: 0 auto;
+    background-image: url("../static/image/poker table3.png");
+    background-size: contain;
+    background-repeat: no-repeat;
+    background-position: center;
+    /*background-color: red;*/
+    max-width: 2000px;
+    display: flex;
+
+  justify-content: center;
+  align-items: center;
+}
+
+.common_card_container{
+    /*margin-top: 10%;*/
+    width: 60%;
+    height: 30%;
+    /*background-color: aqua;*/
+    display: flex;
+    justify-content: space-between;
+    /*align-items: center;*/
+
+
+}
+
+.common_card{
+    max-width: 20%; /* Ustalamy maksymalną szerokość na 100%, aby zdjęcia zmniejszały się proporcjonalnie */
+    max-height: 100%; /* Ustalamy maksymalną wysokość na 100%, aby zdjęcia zmniejszały się proporcjonalnie */
+    object-fit: contain;
+    opacity: 0;
+}
+
+
+/*player card  -------------------------------------------------------------*/
+.player_stuff_container{
+    /*background-color: coral;*/
+    position: absolute;
+    display:flex;
+    height: 25vh;
+    bottom: 7%;
+    max-width: 40vw;
+    align-items: center;
+}
+
+
+#player_card_container{
+   /*background-color: blue;*/
+   display: flex;
+   height: 100%;
+   max-height:100%;
+}
+
+.player_card{
+    /*max-height: 100%;*/
+    height: 100%;
+    max-width: 50%;
+    object-fit: contain;
+    /*width: 50%;*/
+    box-sizing: border-box;
+}
+
+#player_card1{
+    margin-right: 10px;
+}
+
+#player_info_container{
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+
+    padding-top:0.1em;
+    padding-bottom:0.1em;
+    padding-left:1em;
+    padding-right:1em;
+    margin-left: 10%;
+    border: 2px solid #cacad1;
+    background: linear-gradient(to right, #252629, #201e2c);
+    border-radius: 5px;
+    /*font-family: Arial, sans-serif;*/
+    font-size: 2vw;/*16px;*/
+    color: #333;
+    height: 60%;
+    color: white;
+    position: relative;
+    /*top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);*/
+
+}
+
+.playner_name{
+    font-weight: bold;
+    margin-bottom: 5px;
+}
+
+.player_stack{
+    font-style: italic;
+    white-space: nowrap;
+}
+
+
+
+/*oppoent card  -------------------------------------------------------------*/
+.opponent_stuff_container{
+    position: absolute;
+    display:flex;
+    height: 25vh;
+    top: 2%;
+    max-width: 40vw;
+    align-items: center;
+}
+
+
+#opponent_card_container{
+    /*background-color: blue;*/
+    height: 100%;
+   display: flex;
+}
+
+.opponent_card{
+    /*
+    max-height: 100%;
+    max-width: 50%;
+    object-fit: contain;
+    width: 50%;
+    box-sizing: border-box;
+    */
+    height: 100%;
+    max-width: 50%;
+    object-fit: contain;
+    box-sizing: border-box;
+}
+
+#opponent_card1{
+    margin-right: 10px;
+}
+
+#opponent_info_container{
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding-top:0.1em;
+    padding-bottom:0.1em;
+    padding-left:1em;
+    padding-right:1em;
+    /*margin-left: 10%;*/
+    margin-right: 10%;
+    border: 2px solid #cacad1;
+    background: linear-gradient(to right, #252629, #201e2c);
+    border-radius: 5px;
+    font-size: 2vw;/*16px;*/
+    color: #333;
+    height: 60%;
+    color: white;
+    position: relative;
+}
+
+.opponent_name{
+    /*font-weight: bold;*/
+    margin-bottom: 5px;
+}
+
+.opponent_stack{
+    font-style: italic;
+    white-space: nowrap;
+}
+
+
+
+/* bet ---------------------------------*/
+.player_bet{
+    color: #9a2a2a;
+    font-size: 2vw;
+    position: absolute;
+    bottom: 30%;
+    display:none;
+    /*background-color: #d8b824;
+    border-radius: 4px;
+    border: 2px solid #052f01;*/
+
+}
+
+.opponent_bet{
+    font-size: 2vw;
+    position: absolute;
+    top: 27%;
+    display:none;
+    color: #9a2a2a;
+}
+
+.pot{
+    font-size: 3vw;
+    position: absolute;
+    top: 30%;
+    color: #9a2a2a;
+
+}
+
+
+
+/* action---------------------*/
+
+
+#action_container{
+    padding:20px;
+    position: absolute;
+    left: 2%;
+    /*width: max(15vw, 200px);*/
+    width:15vw;
+
+    background-color: #111114;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-evenly;
+    align-items: center;
+    height: 75%;
+    border: 2px solid #cbf99d;
+}
+
+
+#raise_container{
+    display: flex;
+    flex-direction: column;
+    /*justify-content: center;*/
+    align-items: center;
+}
+
+.button {
+    padding: 10px 20px;
+    margin: 10px;
+    font-size: 1.8vw;
+    background-color: #0f5f09;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    display: none;
+    font-family: 'Orbitron', sans-serif;
+    /*flex-grow: 1;*/
+    white-space: nowrap;
+
+  }
+
+#button_Fold, #button_All-in{
+    display: flex;
+}
+
+
+
+  #slider_raise {
+    width: 90%;
+    accent-color:#0f5f09;
+  }
+
+
+  #opponent_decision{
+    font-size: 3vw;
+    position: absolute;
+    top: 10%;
+    right: 30%;
+    display: none;
+
+  }
+
+  #game_info{
+    font-size: 3vw;
+    position: absolute;
+    bottom: 30%;
+    right: 5%;
+  }
+
+
+  /* Message container------------------------------------------------------------------------------*/
+  /* Style for the message container */
+.message-container {
+    background-color: #111114;
+    position: absolute;
+    right: 0px;
+    bottom: 0px;
+    width: 15vw;
+    height: 60vh;
+    overflow-y: auto;
+    border: 2px solid #cbf99d;
+    padding: 10px;
+    font-family: 'Poppins', sans-serif;
+}
+/* Style for individual messages */
+.message {
+    color: white;
+    font-size:1vw;
+    /*padding: 5px;*/
+    /*margin-bottom: 5px;*/
+
+}
+
+.message.new-round {
+    color: #cbf99d;
+}
+
+.message.end-round {
+    color: #47d147;
+}
+
+
+video {
+    width: 100vw;
+    height: 100vh;
+    object-fit: contain;
+}
+
+
+
+
+@media screen and (orientation: portrait) {
+        #container {
+            display: none;
+        }
+        #rotateMessage{
+            background: black;
+            display: flex;
+        }
+}
+
+

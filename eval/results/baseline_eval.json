@@ -1,0 +1,35 @@
+{
+  "_comment": "Populate after running the engine roll-out eval harness. README reads this file.",
+  "eval_date": null,
+  "checkpoint": "checkpoints/best.pt",
+  "hands_per_matchup": 10000,
+  "big_blind": 20,
+  "starting_stack_bb": 100,
+  "confidence_level": 0.95,
+  "opponents": [
+    {
+      "name": "FishPlayer",
+      "description": "Always calls (PyPokerEngine tutorial bot)",
+      "bb_per_100": null,
+      "ci_low": null,
+      "ci_high": null,
+      "std_error": null
+    },
+    {
+      "name": "HonestPlayer",
+      "description": "Monte Carlo equity threshold bot",
+      "bb_per_100": null,
+      "ci_low": null,
+      "ci_high": null,
+      "std_error": null
+    },
+    {
+      "name": "RandomPlayer",
+      "description": "Uniform random legal action",
+      "bb_per_100": null,
+      "ci_low": null,
+      "ci_high": null,
+      "std_error": null
+    }
+  ]
+}

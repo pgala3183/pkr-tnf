@@ -1,0 +1,9 @@
+{
+  "num_hands": 200,
+  "num_shards": 2,
+  "shard_size": 100,
+  "vocab_size": 235,
+  "output_dir": "data\\processed\\self_play_test",
+  "bot_a": "honest",
+  "bot_b": "random"
+}

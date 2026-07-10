@@ -16,6 +16,7 @@ env/
 checkpoints/
 data/raw/
 wandb/
+logs/
 
 # IDE / OS
 .idea/

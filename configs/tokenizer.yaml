@@ -1,0 +1,59 @@
+# Heads-up no-limit hold'em tokenizer vocabulary configuration.
+
+action_types:
+  - FOLD
+  - CHECK
+  - CALL
+  - BET
+  - RAISE
+  - ALL_IN
+
+# Pot-relative bet/raise sizing (ratio = wager_amount / pot_before_action).
+size_buckets:
+  - { low: 0.0,   high: 0.10, label: "0-10%" }
+  - { low: 0.10,  high: 0.25, label: "10-25%" }
+  - { low: 0.25,  high: 0.40, label: "25-40%" }
+  - { low: 0.40,  high: 0.60, label: "40-60%" }
+  - { low: 0.60,  high: 0.80, label: "60-80%" }
+  - { low: 0.80,  high: 1.00, label: "80-100%" }
+  - { low: 1.00,  high: 1.50, label: "100-150%" }
+  - { low: 1.50,  high: 2.00, label: "150-200%" }
+  - { low: 2.00,  high: 3.00, label: "200-300%" }
+  - { low: 3.00,  high: 5.00, label: "300-500%" }
+  - { low: 5.00,  high: null, label: "500%+" }
+  - { low: null, high: null, label: "ALL_IN" }
+
+streets:
+  - PREFLOP
+  - FLOP
+  - TURN
+  - RIVER
+
+positions:
+  - SB
+  - BB
+  # Extend for multi-way: BTN, CO, MP, UTG, etc.
+
+# Effective stack in big blinds (min hero, villain).
+stack_buckets:
+  - { low: 0,   high: 10,  label: "0-10bb" }
+  - { low: 10,  high: 20,  label: "10-20bb" }
+  - { low: 20,  high: 40,  label: "20-40bb" }
+  - { low: 40,  high: 60,  label: "40-60bb" }
+  - { low: 60,  high: 100, label: "60-100bb" }
+  - { low: 100, high: 150, label: "100-150bb" }
+  - { low: 150, high: 200, label: "150-200bb" }
+  - { low: 200, high: null, label: "200bb+" }
+
+special_tokens:
+  - HAND_END
+  - SHOWDOWN
+
+pad_token: "<PAD>"
+
+# Actions that do not take a pot-relative size bucket.
+sizeless_action_types:
+  - FOLD
+  - CHECK
+  - CALL
+  - ALL_IN

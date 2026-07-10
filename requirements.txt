@@ -9,3 +9,4 @@ pyyaml
 tqdm
 pytest
 wandb  # optional, for logging
+httpx>=0.27

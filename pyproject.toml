@@ -21,8 +21,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "httpx"]
 logging = ["wandb"]
+gpu = ["matplotlib"]  # benchmark plots; Triton ships with CUDA PyTorch wheels
+serving = ["onnxscript"]  # optional; legacy dynamo=False export works without it
 
 [tool.setuptools.package-dir]
 "poker_transformer" = "src"
@@ -32,6 +34,7 @@ packages = [
     "poker_transformer",
     "poker_transformer.tokenizer",
     "poker_transformer.model",
+    "poker_transformer.model.kernels",
     "poker_transformer.training",
     "poker_transformer.engine_integration",
     "poker_transformer.eval",

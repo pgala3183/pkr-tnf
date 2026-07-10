@@ -1,0 +1,26 @@
+batch_size: 8
+betas:
+- 0.9
+- 0.95
+block_size: 256
+checkpoint_dir: checkpoints/test_run
+checkpoint_interval: 5
+data_dir: data/processed/self_play_test
+eval_interval: 5
+gradient_clip: 1.0
+keep_last_checkpoints: 3
+learning_rate: 0.0003
+log_csv: logs/test_training.csv
+log_interval: 1
+max_steps: 11  # runs steps 0–10 so checkpoints save at steps 5 and 10
+min_learning_rate: 3.0e-05
+model_config: configs/model.yaml
+num_workers: 0
+seed: 42
+use_wandb: false
+val_ratio: 0.1
+value_loss_weight: 0.5
+wandb_project: poker-transformer
+wandb_run_name: null
+warmup_steps: 200
+weight_decay: 0.1

@@ -1,0 +1,9 @@
+{
+  "num_hands": 50,
+  "num_shards": 1,
+  "shard_size": 500,
+  "vocab_size": 235,
+  "output_dir": "data\\processed\\smoke_gen",
+  "bot_a": "honest",
+  "bot_b": "random"
+}
