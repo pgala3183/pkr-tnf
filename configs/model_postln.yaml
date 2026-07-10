@@ -1,0 +1,15 @@
+# Post-LN variant with Triton fused residual+LayerNorm kernels enabled.
+# NOT checkpoint-compatible with configs/model.yaml (Pre-LN): the block
+# structure changes from x + attn(ln(x)) to ln(x + attn(x)).
+
+n_layer: 6
+n_head: 8
+n_embd: 256
+block_size: 256
+dropout: 0.1
+vocab_size: 235  # must match tokenizer vocabulary size
+
+# MLP expansion ratio inside each transformer block.
+mlp_ratio: 4
+
+use_triton_kernels: true

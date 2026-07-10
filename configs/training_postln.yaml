@@ -1,0 +1,34 @@
+# Retrain config: Post-LN Triton path + batch 128 for better L4 utilization.
+# Writes to its own checkpoint dir so it never clobbers checkpoints/best.pt.
+
+data_dir: data/processed/self_play
+model_config: configs/model_postln.yaml
+
+batch_size: 128       # was 32; profiler showed 2.4% GPU utilization and 13x memory headroom
+num_workers: 2
+block_size: 256
+
+learning_rate: 6.0e-4 # ~sqrt-scaled from 3e-4 for the 4x larger batch
+min_learning_rate: 6.0e-5
+weight_decay: 0.1
+betas: [0.9, 0.95]
+warmup_steps: 200
+max_steps: 5000
+gradient_clip: 1.0
+
+value_loss_weight: 0.5
+val_ratio: 0.1
+
+eval_interval: 100
+checkpoint_interval: 500
+keep_last_checkpoints: 3
+checkpoint_dir: checkpoints/postln
+
+use_wandb: false
+wandb_project: poker-transformer
+wandb_run_name: null
+
+log_csv: logs/training_postln.csv
+log_interval: 10
+
+seed: 42
