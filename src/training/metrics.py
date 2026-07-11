@@ -44,10 +44,14 @@ def compute_losses(
     denom = shift_mask.sum().clamp_min(1.0)
     action_loss = masked.sum() / denom
 
-    value_loss = F.binary_cross_entropy(
-        win_prob.view(-1),
-        batch.win_labels.view(-1),
-    )
+    # binary_cross_entropy is not autocast-safe (PyTorch raises under AMP).
+    # Compute value loss in fp32 with autocast disabled; action CE is fine under AMP.
+    device_type = win_prob.device.type if win_prob.device.type in {"cuda", "cpu"} else "cpu"
+    with torch.autocast(device_type=device_type, enabled=False):
+        value_loss = F.binary_cross_entropy(
+            win_prob.float().view(-1),
+            batch.win_labels.float().view(-1),
+        )
 
     total_loss = action_loss + value_loss_weight * value_loss
     perplexity = math.exp(min(action_loss.item(), 20.0))
