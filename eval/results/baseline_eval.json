@@ -1,42 +1,42 @@
 {
-  "eval_date": "2026-07-11T10:23:06.181816+00:00",
-  "checkpoint": "checkpoints/postln/best.pt",
-  "hands_per_matchup": 10000,
-  "big_blind": 20,
-  "small_blind": 10,
-  "starting_stack_bb": 50.0,
+  "eval_date": "2026-07-11T19:07:18.950654+00:00",
+  "checkpoint": "checkpoints/postln_bf16/best.pt",
+  "hands_per_matchup": 2000,
+  "big_blind": 40,
+  "small_blind": 20,
+  "starting_stack_bb": 25.0,
   "confidence_level": 0.95,
   "policy": "greedy",
   "device": "cuda",
   "seed": 0,
-  "note": "SB=10/BB=20 (50bb). Training self-play used SB=20/BB=40 (25bb). Re-run with --small-blind 20 for exact match.",
+  "note": "Matches self-play training blinds (SB=20, BB=40, 25bb stacks).",
   "opponents": [
     {
       "name": "FishPlayer",
       "description": "Always calls (PyPokerEngine tutorial bot)",
-      "bb_per_100": -16.043,
-      "ci_low": -87.102,
-      "ci_high": 55.016,
-      "std_error": 36.255,
-      "hands": 10000
+      "bb_per_100": -80.64,
+      "ci_low": -118.305,
+      "ci_high": -42.975,
+      "std_error": 19.217,
+      "hands": 2000
     },
     {
       "name": "HonestPlayer",
       "description": "Monte Carlo equity threshold bot",
-      "bb_per_100": -167.365,
-      "ci_low": -201.604,
-      "ci_high": -133.126,
-      "std_error": 17.469,
-      "hands": 10000
+      "bb_per_100": 95.9,
+      "ci_low": 71.812,
+      "ci_high": 119.988,
+      "std_error": 12.29,
+      "hands": 2000
     },
     {
       "name": "RandomPlayer",
       "description": "Uniform random legal action",
-      "bb_per_100": 1398.136,
-      "ci_low": 1343.189,
-      "ci_high": 1453.083,
-      "std_error": 28.035,
-      "hands": 10000
+      "bb_per_100": 229.545,
+      "ci_low": 175.219,
+      "ci_high": 283.871,
+      "std_error": 27.718,
+      "hands": 2000
     }
   ]
 }

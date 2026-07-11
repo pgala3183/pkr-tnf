@@ -85,43 +85,44 @@ Training data is **50k heads-up self-play hands** (`HonestPlayer` vs `RandomPlay
 
 ## Results
 
-Win rates vs baseline bots (bb/100, hero = Transformer). Values are read from [`eval/results/baseline_eval.json`](eval/results/baseline_eval.json) after a full engine roll-out eval.
+Win rates vs baseline bots (bb/100, hero = Transformer). Canonical numbers: [`eval/results/baseline_eval.json`](eval/results/baseline_eval.json).
+
+### Primary eval (matches training: SB=20 / BB=40 / 25bb)
+
+`checkpoints/postln_bf16/best.pt`, 2000 hands/matchup, greedy, L4:
 
 | Opponent | bb/100 | 95% CI | Notes |
 |----------|--------|--------|-------|
-| FishPlayer | **−16.0** | [−87.1, +55.0] | Always calls — CI includes 0 (not significant) |
-| HonestPlayer | **−167.4** | [−201.6, −133.1] | MC equity bot — clearly losing |
-| RandomPlayer | **+1398.1** | [+1343.2, +1453.1] | Uniform random — crushing |
+| FishPlayer | **−80.6** | [−118.3, −43.0] | Calling station — significant loss |
+| HonestPlayer | **+95.9** | [+71.8, +120.0] | MC equity bot — **significant win** |
+| RandomPlayer | **+229.5** | [+175.2, +283.9] | Uniform random — significant win |
 
-Measured on L4, 10k hands/matchup, greedy policy, `checkpoints/postln/best.pt` (SB=10/BB=20, 50bb stacks — see note below). Smoke (200 hands) had huge CIs; 10k hands stabilize the estimate.
+**Reading:** at the **training stack depth**, the model beats Honest and Random but **loses to Fish**. That pattern is classic for short-stack / action-imitation bots: enough structure to exploit foldy/random lines, but over-aggression or thin value gets punished by a bot that never folds. Card-blind modeling still limits true poker strength.
 
-**Reading:** the model **destroys Random** (as expected from training on Honest×Random patterns) but **loses to Honest** and is **≈break-even vs Fish** (calling station). That matches an action-only imitator of weak self-play data: it learned to punish noise, not to beat equity-aware play.
+### Earlier eval (mismatched 50bb @ BB=20 — not apples-to-apples)
+
+`checkpoints/postln/best.pt`, 10k hands — see [`eval/results/baseline_eval_50bb_mismatch.json`](eval/results/baseline_eval_50bb_mismatch.json): Fish ≈0, Honest −167, Random +1398. Different depth → different game; use the primary table above for claims.
 
 ```bash
-# Smoke (fast): ~2–4 hands/sec on CPU; use cuda if available
 python -m poker_transformer.eval.rollout \
-  --checkpoint checkpoints/postln/best.pt \
-  --hands 200 \
-  --device cuda
-
-# README-quality CIs
-python -m poker_transformer.eval.rollout \
-  --checkpoint checkpoints/postln/best.pt \
+  --checkpoint checkpoints/postln_bf16/best.pt \
   --hands 10000 \
+  --small-blind 20 \
   --device cuda \
   --output eval/results/baseline_eval.json
 ```
 
-> Integration tests (`tests/test_rollout.py`, `tests/test_transformer_player.py`) confirm games complete; fill the table from the JSON after a full run.
+> Integration tests (`tests/test_rollout.py`, `tests/test_transformer_player.py`) confirm games complete.
 
 **Trained checkpoints (L4):**
 
-| Checkpoint | Val action ppl | Val action loss | Notes |
-|------------|----------------|-----------------|-------|
-| `checkpoints/best.pt` (Pre-LN, step 4800) | 1.186 | 0.171 | batch 32, ~362 samples/s |
-| `checkpoints/postln/best.pt` (Post-LN, step 4900) | **1.185** | **0.169** | batch 128, ~655 samples/s |
+| Checkpoint | Val action ppl | Throughput | Notes |
+|------------|----------------|------------|-------|
+| `checkpoints/best.pt` (Pre-LN) | 1.186 | ~362 samples/s | batch 32, fp32 |
+| `checkpoints/postln/best.pt` (Post-LN) | 1.185 | ~655 samples/s | batch 128, fp32 |
+| `checkpoints/postln_bf16/best.pt` | **1.185** | **~1536 samples/s** | continue-train to step 7000, bf16 |
 
-Perplexity ~1.18 on a 235-token vocab means the model closely fits Honest/Random self-play — **bb/100 vs held-out bots** is the metric that matters for playing strength.
+Perplexity ~1.18 means close fit to Honest/Random self-play — **bb/100** is the metric that matters for playing strength.
 
 ---
 
