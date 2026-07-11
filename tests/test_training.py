@@ -55,3 +55,34 @@ def test_compute_losses_shapes() -> None:
     assert losses.action_loss.ndim == 0
     assert losses.value_loss.ndim == 0
     assert torch.isfinite(losses.total_loss)
+
+
+def test_resolve_amp_dtype() -> None:
+    from poker_transformer.training.train import TrainingConfig, resolve_amp_dtype
+
+    assert resolve_amp_dtype("bf16") == torch.bfloat16
+    assert resolve_amp_dtype("fp16") == torch.float16
+    cfg = TrainingConfig.from_dict(
+        {
+            "data_dir": "data/processed/self_play_test",
+            "model_config": "configs/model.yaml",
+            "batch_size": 8,
+            "block_size": 256,
+            "learning_rate": 3e-4,
+            "min_learning_rate": 3e-5,
+            "weight_decay": 0.1,
+            "warmup_steps": 10,
+            "max_steps": 5,
+            "value_loss_weight": 0.5,
+            "val_ratio": 0.1,
+            "eval_interval": 5,
+            "checkpoint_interval": 5,
+            "keep_last_checkpoints": 1,
+            "checkpoint_dir": "checkpoints/test",
+            "log_csv": "logs/test.csv",
+            "use_amp": True,
+            "amp_dtype": "bf16",
+        }
+    )
+    assert cfg.use_amp is True
+    assert cfg.amp_dtype == "bf16"

@@ -70,6 +70,8 @@ class TrainingConfig:
     log_csv: str
     log_interval: int
     seed: int
+    use_amp: bool = False
+    amp_dtype: str = "bf16"  # "bf16" or "fp16"
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "TrainingConfig":
@@ -99,7 +101,17 @@ class TrainingConfig:
             log_csv=str(raw["log_csv"]),
             log_interval=int(raw.get("log_interval", 10)),
             seed=int(raw.get("seed", 42)),
+            use_amp=bool(raw.get("use_amp", False)),
+            amp_dtype=str(raw.get("amp_dtype", "bf16")).lower(),
         )
+
+
+def resolve_amp_dtype(name: str) -> torch.dtype:
+    if name in {"bf16", "bfloat16"}:
+        return torch.bfloat16
+    if name in {"fp16", "float16"}:
+        return torch.float16
+    raise ValueError(f"Unsupported amp_dtype: {name!r} (use bf16 or fp16)")
 
 
 def load_training_config(config_path: str | Path | None = None) -> TrainingConfig:
@@ -290,6 +302,7 @@ def train(
     *,
     distributed: bool = False,
     baseline_throughput: float | None = None,
+    resume_from: Path | None = None,
 ) -> dict[str, Any]:
     ctx: DistributedContext | None = None
     if distributed:
@@ -302,6 +315,14 @@ def train(
 
     is_main = ctx.is_main if ctx else True
     world_size = ctx.world_size if ctx else 1
+
+    use_amp = bool(config.use_amp and device.type == "cuda")
+    amp_dtype = resolve_amp_dtype(config.amp_dtype) if use_amp else torch.float32
+    # GradScaler is for fp16 only; bf16 on Ampere+ is stable without scaling.
+    try:
+        scaler = torch.amp.GradScaler("cuda", enabled=use_amp and amp_dtype == torch.float16)
+    except (AttributeError, TypeError):
+        scaler = torch.cuda.amp.GradScaler(enabled=use_amp and amp_dtype == torch.float16)
 
     vocab = Vocabulary.from_config()
     model_cfg = load_model_config(PROJECT_ROOT / config.model_config)
@@ -355,6 +376,27 @@ def train(
         weight_decay=config.weight_decay,
     )
 
+    start_step = 0
+    if resume_from is not None:
+        resume_path = Path(resume_from)
+        if not resume_path.is_absolute():
+            resume_path = PROJECT_ROOT / resume_path
+        payload = torch.load(resume_path, map_location=device, weights_only=False)
+        model.load_state_dict(payload["model_state_dict"])
+        if "optimizer_state_dict" in payload:
+            optimizer.load_state_dict(payload["optimizer_state_dict"])
+        start_step = int(payload.get("step", 0)) + 1
+        if is_main:
+            print(
+                f"Resumed from {resume_path} at step {start_step} "
+                f"(continues until max_steps={config.max_steps})"
+            )
+        if start_step >= config.max_steps:
+            raise ValueError(
+                f"Resume step {start_step} >= max_steps {config.max_steps}; "
+                "raise max_steps in the config or pass --max-steps."
+            )
+
     # Measure rank-0 single-GPU throughput *before* DDP wrapping so we have a
     # fair baseline for scaling efficiency (no NCCL all-reduce in this phase).
     single_gpu_baseline = baseline_throughput or load_single_gpu_baseline()
@@ -405,14 +447,18 @@ def train(
     throughput = ThroughputTracker(config.batch_size, world_size)
     throughput.single_gpu_baseline_sps = single_gpu_baseline
 
-    step = 0
+    step = start_step
     sampler_epoch = 0
     train_iter = iter(train_loader)
     last_val_metrics: dict[str, float] | None = None
 
     if is_main:
         mode = f"DDP x{world_size}" if distributed else "single-GPU"
-        print(f"Training on {device} ({mode}), batch_size={config.batch_size} per GPU")
+        amp_msg = f", amp={config.amp_dtype}" if use_amp else ""
+        print(
+            f"Training on {device} ({mode}), batch_size={config.batch_size} per GPU"
+            f"{amp_msg}, steps {step}→{config.max_steps}"
+        )
 
     while step < config.max_steps:
         try:
@@ -433,18 +479,21 @@ def train(
             win_labels=batch.win_labels.to(device, non_blocking=True),
         )
 
-        train_losses = compute_losses(
-            model,
-            batch,
-            pad_id=vocab.pad_id,
-            value_loss_weight=config.value_loss_weight,
-        )
+        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+            train_losses = compute_losses(
+                model,
+                batch,
+                pad_id=vocab.pad_id,
+                value_loss_weight=config.value_loss_weight,
+            )
 
         # DDP hooks all-reduce averaged gradients during this backward pass.
         optimizer.zero_grad(set_to_none=True)
-        train_losses.total_loss.backward()
+        scaler.scale(train_losses.total_loss).backward()
+        scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), config.gradient_clip)
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
 
         throughput.step()
 
@@ -611,13 +660,44 @@ def main() -> None:
         default=None,
         help="Single-GPU samples/sec baseline for scaling efficiency (optional)",
     )
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="Resume weights/optimizer from a checkpoint and continue until max_steps",
+    )
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=None,
+        help="Override config max_steps (useful for continue-train)",
+    )
+    parser.add_argument(
+        "--use-amp",
+        action="store_true",
+        help="Enable mixed precision (overrides config use_amp=false)",
+    )
+    parser.add_argument(
+        "--amp-dtype",
+        choices=["bf16", "fp16"],
+        default=None,
+        help="Autocast dtype when AMP is enabled (default: config or bf16)",
+    )
     args = parser.parse_args()
 
     config = load_training_config(args.config)
+    if args.max_steps is not None:
+        config = TrainingConfig(**{**config.__dict__, "max_steps": args.max_steps})
+    if args.use_amp:
+        config = TrainingConfig(**{**config.__dict__, "use_amp": True})
+    if args.amp_dtype is not None:
+        config = TrainingConfig(**{**config.__dict__, "amp_dtype": args.amp_dtype})
+
     summary = train(
         config,
         distributed=args.distributed,
         baseline_throughput=args.baseline_throughput,
+        resume_from=args.resume,
     )
     if summary.get("best_val_loss") is not None or not args.distributed:
         print("\n=== Training complete ===")

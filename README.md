@@ -93,23 +93,33 @@ Win rates vs baseline bots (bb/100, hero = Transformer). Values are read from [`
 | HonestPlayer | _TBD_ | [_TBD_, _TBD_] | MC equity threshold |
 | RandomPlayer | _TBD_ | [_TBD_, _TBD_] | Uniform random legal action |
 
-**Eval settings (target):** 10,000 hands/matchup, BB=20, 100bb stacks, same blinds as training.
+**Eval settings:** independent 1-round hands with fresh 100bb stacks, SB=10 / BB=20 (matches training), hero seat alternated, greedy policy.
 
 ```bash
-# TODO: wire up roll-out harness; until then, edit eval/results/baseline_eval.json directly
-# python -m poker_transformer.eval.rollout --checkpoint checkpoints/best.pt --hands 10000
+# Smoke (fast): ~2–4 hands/sec on CPU; use cuda if available
+python -m poker_transformer.eval.rollout \
+  --checkpoint checkpoints/postln/best.pt \
+  --hands 200 \
+  --device cuda
+
+# README-quality CIs
+python -m poker_transformer.eval.rollout \
+  --checkpoint checkpoints/postln/best.pt \
+  --hands 10000 \
+  --device cuda \
+  --output eval/results/baseline_eval.json
 ```
 
-> Smoke-test integration (`tests/test_transformer_player.py`) confirms 20-round games vs `FishPlayer` complete without errors; win-rate numbers require the eval harness above.
+> Integration tests (`tests/test_rollout.py`, `tests/test_transformer_player.py`) confirm games complete; fill the table from the JSON after a full run.
 
-**Trained checkpoint (step 4800, L4, 5000 steps @ 362 samples/s):**
+**Trained checkpoints (L4):**
 
-| Split | Action loss | Action perplexity | Value loss |
-|-------|-------------|-------------------|------------|
-| Train (45k hands) | 0.174 | 1.190 | 0.014 |
-| Val (5k hands) | 0.171 | **1.186** | 0.016 |
+| Checkpoint | Val action ppl | Val action loss | Notes |
+|------------|----------------|-----------------|-------|
+| `checkpoints/best.pt` (Pre-LN, step 4800) | 1.186 | 0.171 | batch 32, ~362 samples/s |
+| `checkpoints/postln/best.pt` (Post-LN, step 4900) | **1.185** | **0.169** | batch 128, ~655 samples/s |
 
-Train/val are nearly identical — no overfitting on the self-play distribution. Perplexity 1.19 on a 235-token vocabulary means the model is near-certain about the next action most of the time; that reflects how predictable the `HonestPlayer`/`RandomPlayer` data is, which is exactly why bb/100 vs held-out bots (not loss) is the metric that matters.
+Perplexity ~1.18 on a 235-token vocab means the model closely fits Honest/Random self-play — **bb/100 vs held-out bots** is the metric that matters for playing strength.
 
 ---
 
@@ -319,8 +329,17 @@ Pre-generated shards are included under `data/processed/self_play/` (50k hands, 
 ### Train
 
 ```bash
-# Single GPU
+# Single GPU (Pre-LN baseline)
 python -m poker_transformer.training.train --config configs/training.yaml
+
+# Post-LN + Triton path, batch 128
+python -m poker_transformer.training.train --config configs/training_postln.yaml
+
+# bf16 continue-train from a Post-LN checkpoint (raises max_steps past resume step)
+python -m poker_transformer.training.train \
+  --config configs/training_bf16.yaml \
+  --resume checkpoints/postln/best.pt \
+  --max-steps 7000
 
 # Smoke test (fast, CPU-friendly)
 python -m poker_transformer.training.train --config configs/training_smoke.yaml
@@ -329,16 +348,19 @@ python -m poker_transformer.training.train --config configs/training_smoke.yaml
 bash scripts/launch_distributed.sh 4
 ```
 
-Checkpoints land in `checkpoints/best.pt`. Training logs: `logs/training.csv`.
+Checkpoints land in the config's `checkpoint_dir` (e.g. `checkpoints/postln/best.pt`). Logs: `logs/*.csv`.
 
 ### Evaluate
 
 ```bash
 # Validation loss / perplexity on held-out self-play shards
-python -m poker_transformer.training.evaluate_loss --checkpoint checkpoints/best.pt
+python -m poker_transformer.training.evaluate_loss --checkpoint checkpoints/postln/best.pt
 
-# Engine roll-out bb/100 → update eval/results/baseline_eval.json
-# (harness TODO)
+# Engine roll-out bb/100 → eval/results/baseline_eval.json
+python -m poker_transformer.eval.rollout \
+  --checkpoint checkpoints/postln/best.pt \
+  --hands 10000 \
+  --device cuda
 ```
 
 ### Export ONNX + run API

@@ -1,0 +1,37 @@
+# Continue-train from Post-LN checkpoint with bf16 autocast.
+# Resume weights with --resume, raise max_steps past the checkpoint step.
+
+data_dir: data/processed/self_play
+model_config: configs/model_postln.yaml
+
+batch_size: 128
+num_workers: 2
+block_size: 256
+
+learning_rate: 3.0e-4   # lower LR for continue-train
+min_learning_rate: 3.0e-5
+weight_decay: 0.1
+betas: [0.9, 0.95]
+warmup_steps: 50        # short re-warmup after resume
+max_steps: 7000         # absolute step budget (resume from ~4900 continues to 7000)
+gradient_clip: 1.0
+
+value_loss_weight: 0.5
+val_ratio: 0.1
+
+eval_interval: 100
+checkpoint_interval: 500
+keep_last_checkpoints: 3
+checkpoint_dir: checkpoints/postln_bf16
+
+use_amp: true
+amp_dtype: bf16
+
+use_wandb: false
+wandb_project: poker-transformer
+wandb_run_name: null
+
+log_csv: logs/training_postln_bf16.csv
+log_interval: 10
+
+seed: 42
