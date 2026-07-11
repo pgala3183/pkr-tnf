@@ -15,6 +15,18 @@ DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "tokenizer.yaml"
 ACTIONS_WITHOUT_SIZE = frozenset({"FOLD", "CHECK", "CALL", "ALL_IN"})
 ACTIONS_WITH_SIZE = frozenset({"BET", "RAISE"})
 
+# PyPokerEngine card codes: suit letter + rank (C/D/H/S + A,2-9,T,J,Q,K).
+CARD_SUITS = ("C", "D", "H", "S")
+CARD_RANKS = ("A", "2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K")
+
+
+def all_card_codes() -> tuple[str, ...]:
+    return tuple(f"{suit}{rank}" for suit in CARD_SUITS for rank in CARD_RANKS)
+
+
+def card_token(card: str) -> str:
+    return f"CARD|{card.upper()}"
+
 
 @dataclass(frozen=True)
 class TokenizerConfig:
@@ -26,6 +38,8 @@ class TokenizerConfig:
     special_tokens: tuple[str, ...]
     pad_token: str
     sizeless_action_types: frozenset[str]
+    deal_tokens: tuple[str, ...] = ()
+    include_cards: bool = True
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "TokenizerConfig":
@@ -38,6 +52,8 @@ class TokenizerConfig:
             special_tokens=tuple(raw["special_tokens"]),
             pad_token=raw["pad_token"],
             sizeless_action_types=frozenset(raw["sizeless_action_types"]),
+            deal_tokens=tuple(raw.get("deal_tokens", [])),
+            include_cards=bool(raw.get("include_cards", True)),
         )
 
 
@@ -64,7 +80,7 @@ def _action_token(
 
 
 def build_vocabulary(config: TokenizerConfig | None = None) -> list[str]:
-    """Return ordered token strings for the full flat vocabulary."""
+    """Return ordered token strings. Cards/deal markers are appended last."""
     config = config or load_config()
     tokens: list[str] = [config.pad_token]
 
@@ -89,6 +105,11 @@ def build_vocabulary(config: TokenizerConfig | None = None) -> list[str]:
                             )
                         )
 
+    # Append-only: keeps action ids 0..234 identical to the pre-card vocab.
+    tokens.extend(config.deal_tokens)
+    if config.include_cards:
+        tokens.extend(card_token(code) for code in all_card_codes())
+
     return tokens
 
 
@@ -100,7 +121,7 @@ class Vocabulary:
         tokens: list[str],
         config: TokenizerConfig,
         *,
-        version: int = 1,
+        version: int = 2,
     ) -> None:
         if len(tokens) != len(set(tokens)):
             duplicates = {token for token in tokens if tokens.count(token) > 1}
@@ -111,6 +132,7 @@ class Vocabulary:
         self.tokens = list(tokens)
         self.token_to_id = {token: idx for idx, token in enumerate(self.tokens)}
         self.id_to_token = dict(enumerate(self.tokens))
+        self._deal_token_set = frozenset(config.deal_tokens)
 
     @classmethod
     def from_config(cls, config_path: str | Path | None = None) -> "Vocabulary":
@@ -162,17 +184,36 @@ class Vocabulary:
     def is_hand_start(self, token: str) -> bool:
         return token.startswith("HAND_START|")
 
+    def is_card(self, token: str) -> bool:
+        return token.startswith("CARD|")
+
+    def is_deal(self, token: str) -> bool:
+        return token in self._deal_token_set
+
     def is_special(self, token: str) -> bool:
-        return token in self.config.special_tokens or token == self.config.pad_token
+        return (
+            token in self.config.special_tokens
+            or token == self.config.pad_token
+            or self.is_deal(token)
+        )
 
     def is_action(self, token: str) -> bool:
-        return not self.is_special(token) and not self.is_hand_start(token)
+        return (
+            not self.is_special(token)
+            and not self.is_hand_start(token)
+            and not self.is_card(token)
+        )
+
+    def is_action_id(self, token_id: int) -> bool:
+        if token_id < 0 or token_id >= self.size:
+            return False
+        return self.is_action(self.token_for(token_id))
 
     def parse_token(self, token: str) -> dict[str, str]:
         if token == self.config.pad_token:
             return {"kind": "pad", "token": token}
 
-        if token in self.config.special_tokens:
+        if token in self.config.special_tokens or self.is_deal(token):
             return {"kind": "special", "token": token}
 
         if self.is_hand_start(token):
@@ -180,6 +221,9 @@ class Vocabulary:
                 "kind": "hand_start",
                 "stack_bucket": token.split("|", 1)[1],
             }
+
+        if self.is_card(token):
+            return {"kind": "card", "card": token.split("|", 1)[1]}
 
         parts = token.split("|")
         if len(parts) == 3:

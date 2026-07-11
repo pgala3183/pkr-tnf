@@ -30,11 +30,6 @@ from examples.players.random_player import RandomPlayer  # noqa: E402
 from pypokerengine.api.game import setup_config, start_poker  # noqa: E402
 from pypokerengine.players import BasePokerPlayer  # noqa: E402
 
-from poker_transformer.tokenizer.encode import (  # noqa: E402
-    encode_action,
-    encode_hand_start,
-    encode_special,
-)
 from poker_transformer.tokenizer.vocab import Vocabulary  # noqa: E402
 
 STREET_MAP = {
@@ -89,6 +84,7 @@ class HandRecord:
     result: dict[str, Any] = field(default_factory=dict)
     big_blind: int = 0
     initial_stacks: dict[str, int] = field(default_factory=dict)
+    community_cards: list[str] = field(default_factory=list)
 
 
 class HandRecorder:
@@ -126,6 +122,7 @@ class HandRecorder:
         if self.current is None:
             return
         if round_state is not None:
+            self.current.community_cards = list(round_state.get("community_card", []))
             self._replay_action_histories(round_state)
         self.current.result = result
 
@@ -248,6 +245,13 @@ class RecordingPlayer(BasePokerPlayer):
         self.log_updates = log_updates
         self.uuid = ""
 
+    def set_uuid(self, uuid: str) -> None:
+        self.uuid = uuid
+        if hasattr(self.inner, "set_uuid"):
+            self.inner.set_uuid(uuid)
+        else:
+            self.inner.uuid = uuid
+
     def declare_action(self, valid_actions, hole_card, round_state):
         return self.inner.declare_action(valid_actions, hole_card, round_state)
 
@@ -352,72 +356,63 @@ def _normalize_action(
     return None
 
 
-def _stacks_for_encoding(record: HandRecord, action: RecordedAction) -> tuple[int, int]:
-    names = list(record.initial_stacks.keys())
-    if len(names) != 2:
-        stacks = list(action.stack_sizes.values())
-        return stacks[0], stacks[1]
-    hero_stack = action.stack_sizes.get(names[0], 0)
-    villain_stack = action.stack_sizes.get(names[1], 0)
-    return hero_stack, villain_stack
-
-
-def hand_to_token_ids(record: HandRecord, vocab: Vocabulary) -> list[int]:
+def hand_to_token_ids(
+    record: HandRecord,
+    vocab: Vocabulary,
+    *,
+    hero_name: str | None = None,
+    include_cards: bool = True,
+) -> list[int]:
     if not record.actions:
         return []
 
     names = list(record.initial_stacks.keys())
-    if len(names) == 2:
-        hero_stack = record.initial_stacks[names[0]]
-        villain_stack = record.initial_stacks[names[1]]
-    else:
-        first_stacks = record.actions[0].stack_sizes
-        stack_names = list(first_stacks.keys())
-        hero_stack, villain_stack = (
-            (first_stacks[stack_names[0]], first_stacks[stack_names[1]])
-            if len(stack_names) == 2
-            else (1000, 1000)
-        )
+    if hero_name is None:
+        hero_name = names[0] if names else None
+    if hero_name is None:
+        return []
 
-    token_ids = [
-        encode_hand_start(
-            {
-                "hero_stack": hero_stack,
-                "villain_stack": villain_stack,
-                "big_blind": record.big_blind,
-            },
-            vocab,
-        )
-    ]
+    villain_name = next((n for n in names if n != hero_name), None)
+    hero_stack = float(record.initial_stacks.get(hero_name, 1000))
+    villain_stack = float(
+        record.initial_stacks.get(villain_name, hero_stack) if villain_name else hero_stack
+    )
+    hole_by_name = {
+        record.player_names.get(uuid, uuid): cards for uuid, cards in record.hole_cards.items()
+    }
 
-    for action in record.actions:
-        hero_stack, villain_stack = _stacks_for_encoding(record, action)
-        token_ids.append(
-            encode_action(
-                {"action_type": action.action, "amount": action.amount},
-                {
-                    "street": action.street,
-                    "position": action.position,
-                    "pot": max(action.pot_size, 1),
-                    "big_blind": record.big_blind,
-                    "hero_stack": hero_stack,
-                    "villain_stack": villain_stack,
-                },
-                vocab,
-            )
-        )
+    from poker_transformer.tokenizer.hand_sequence import encode_hand_sequence
 
-    if record.result.get("showdown"):
-        token_ids.append(encode_special("SHOWDOWN", vocab))
-    token_ids.append(encode_special("HAND_END", vocab))
-    return token_ids
+    return encode_hand_sequence(
+        hero_stack=hero_stack,
+        villain_stack=villain_stack,
+        big_blind=float(record.big_blind),
+        actions=record.actions,
+        vocab=vocab,
+        hero_hole=hole_by_name.get(hero_name),
+        community_cards=record.community_cards,
+        showdown=bool(record.result.get("showdown")),
+        include_cards=include_cards,
+    )
 
 
-def _build_bot(name: str) -> BasePokerPlayer:
+def _build_bot(
+    name: str,
+    *,
+    checkpoint: Path | None = None,
+    device: str = "cpu",
+    policy: str = "greedy",
+) -> BasePokerPlayer:
     if name == "honest":
         return FastHonestPlayer()
     if name == "random":
         return RandomPlayer()
+    if name == "transformer":
+        if checkpoint is None:
+            raise ValueError("bot=transformer requires --checkpoint")
+        from poker_transformer.engine_integration.transformer_player import TransformerPlayer
+
+        return TransformerPlayer(checkpoint, policy=policy, device=device)  # type: ignore[arg-type]
     raise ValueError(f"Unknown bot: {name}")
 
 
@@ -429,17 +424,29 @@ def play_hand(
     small_blind: int = 20,
     bot_a: str = "honest",
     bot_b: str = "random",
+    checkpoint: Path | None = None,
+    device: str = "cpu",
+    policy: str = "greedy",
 ) -> HandRecord:
     recorder.start_hand(hand_id, big_blind=small_blind * 2)
 
     config = setup_config(max_round=1, initial_stack=initial_stack, small_blind_amount=small_blind)
     config.register_player(
         name="bot_a",
-        algorithm=RecordingPlayer(_build_bot(bot_a), recorder, "bot_a", log_updates=True),
+        algorithm=RecordingPlayer(
+            _build_bot(bot_a, checkpoint=checkpoint, device=device, policy=policy),
+            recorder,
+            "bot_a",
+            log_updates=True,
+        ),
     )
     config.register_player(
         name="bot_b",
-        algorithm=RecordingPlayer(_build_bot(bot_b), recorder, "bot_b"),
+        algorithm=RecordingPlayer(
+            _build_bot(bot_b, checkpoint=checkpoint, device=device, policy=policy),
+            recorder,
+            "bot_b",
+        ),
     )
 
     start_poker(config, verbose=0)
@@ -447,14 +454,21 @@ def play_hand(
     return recorder.completed[-1]
 
 
-def _hand_to_training_example(record: HandRecord, token_ids: list[int]) -> dict[str, Any]:
-    player_perspectives = {}
-    for uuid, cards in record.hole_cards.items():
-        name = record.player_names.get(uuid, uuid)
+def _hand_to_training_example(record: HandRecord, vocab: Vocabulary) -> dict[str, Any]:
+    names = list(record.initial_stacks.keys())
+    player_perspectives: dict[str, Any] = {}
+    for name in names:
+        token_ids = hand_to_token_ids(record, vocab, hero_name=name, include_cards=True)
+        uuid = next((u for u, n in record.player_names.items() if n == name), name)
         player_perspectives[name] = {
-            "hole_cards": cards,
+            "hole_cards": record.hole_cards.get(uuid, []),
             "token_ids": token_ids,
         }
+
+    primary = names[0] if names else "bot_a"
+    token_ids = player_perspectives.get(primary, {}).get("token_ids") or hand_to_token_ids(
+        record, vocab, include_cards=True
+    )
 
     return {
         "hand_id": record.hand_id,
@@ -464,6 +478,7 @@ def _hand_to_training_example(record: HandRecord, token_ids: list[int]) -> dict[
         "hole_cards": {
             record.player_names.get(uuid, uuid): cards for uuid, cards in record.hole_cards.items()
         },
+        "community_cards": list(record.community_cards),
         "player_perspectives": player_perspectives,
         "result": record.result,
         "big_blind": record.big_blind,
@@ -480,6 +495,9 @@ def generate_dataset(
     small_blind: int = 20,
     bot_a: str = "honest",
     bot_b: str = "random",
+    checkpoint: Path | None = None,
+    device: str = "cpu",
+    policy: str = "greedy",
     vocab: Vocabulary | None = None,
 ) -> dict[str, Any]:
     output_dir = Path(output_dir)
@@ -501,9 +519,12 @@ def generate_dataset(
             small_blind=small_blind,
             bot_a=bot_a,
             bot_b=bot_b,
+            checkpoint=checkpoint,
+            device=device,
+            policy=policy,
         )
-        token_ids = hand_to_token_ids(record, vocab)
-        example = _hand_to_training_example(record, token_ids)
+        example = _hand_to_training_example(record, vocab)
+        token_ids = example["token_ids"]
         example["token_ids_tensor"] = torch.tensor(token_ids, dtype=torch.long)
         shard_examples.append(example)
         sequence_lengths.append(len(token_ids))
@@ -526,6 +547,8 @@ def generate_dataset(
         "output_dir": str(output_dir),
         "bot_a": bot_a,
         "bot_b": bot_b,
+        "checkpoint": str(checkpoint) if checkpoint else None,
+        "include_cards": True,
     }
     manifest_path = output_dir / "manifest.json"
     with manifest_path.open("w", encoding="utf-8") as handle:
@@ -603,9 +626,28 @@ def main() -> None:
     parser.add_argument("--shard-size", type=int, default=500)
     parser.add_argument("--initial-stack", type=int, default=1000)
     parser.add_argument("--small-blind", type=int, default=20)
-    parser.add_argument("--bot-a", choices=["honest", "random"], default="honest")
-    parser.add_argument("--bot-b", choices=["honest", "random"], default="random")
+    parser.add_argument(
+        "--bot-a",
+        choices=["honest", "random", "transformer"],
+        default="honest",
+    )
+    parser.add_argument(
+        "--bot-b",
+        choices=["honest", "random", "transformer"],
+        default="random",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=None,
+        help="Required when bot-a or bot-b is transformer",
+    )
+    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--policy", choices=["greedy", "sampled"], default="greedy")
     args = parser.parse_args()
+
+    if "transformer" in {args.bot_a, args.bot_b} and args.checkpoint is None:
+        parser.error("--checkpoint is required when using bot=transformer")
 
     stats = generate_dataset(
         num_hands=args.num_hands,
@@ -615,6 +657,9 @@ def main() -> None:
         small_blind=args.small_blind,
         bot_a=args.bot_a,
         bot_b=args.bot_b,
+        checkpoint=args.checkpoint,
+        device=args.device,
+        policy=args.policy,
     )
     print_summary(stats)
 

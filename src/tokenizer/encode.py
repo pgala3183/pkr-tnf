@@ -92,9 +92,35 @@ def encode_special(token_name: str, vocab: Vocabulary | None = None) -> int:
     vocab = vocab or Vocabulary.from_config()
     if token_name == "PAD":
         return vocab.id_for(vocab.config.pad_token)
-    if token_name not in vocab.config.special_tokens:
-        raise ValueError(f"Unknown special token: {token_name}")
-    return vocab.id_for(token_name)
+    if token_name in vocab.config.special_tokens or token_name in vocab.config.deal_tokens:
+        return vocab.id_for(token_name)
+    raise ValueError(f"Unknown special token: {token_name}")
+
+
+def encode_card(card: str, vocab: Vocabulary | None = None) -> int:
+    """Encode a PyPokerEngine card code (e.g. 'CA', 'HTs') to a vocab id."""
+    vocab = vocab or Vocabulary.from_config()
+    code = card.upper().replace(" ", "")
+    # Accept 'HT' / 'H10' style; engine uses 'HT' for ten of hearts.
+    if len(code) == 3 and code[1:] == "10":
+        code = code[0] + "T"
+    token = f"CARD|{code}"
+    if token not in vocab.token_to_id:
+        raise ValueError(f"Unknown card token: {token}")
+    return vocab.id_for(token)
+
+
+def encode_deal(street: str, vocab: Vocabulary | None = None) -> int:
+    vocab = vocab or Vocabulary.from_config()
+    street = street.upper()
+    mapping = {
+        "FLOP": "DEAL_FLOP",
+        "TURN": "DEAL_TURN",
+        "RIVER": "DEAL_RIVER",
+    }
+    if street not in mapping:
+        raise ValueError(f"No deal token for street: {street}")
+    return encode_special(mapping[street], vocab)
 
 
 def encode_action(
@@ -146,6 +172,9 @@ def encode_token_for_roundtrip(token: str, vocab: Vocabulary | None = None) -> i
 
     if parsed["kind"] == "special":
         return encode_special(parsed["token"], vocab)
+
+    if parsed["kind"] == "card":
+        return encode_card(parsed["card"], vocab)
 
     if parsed["kind"] == "hand_start":
         label = parsed["stack_bucket"]

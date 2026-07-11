@@ -325,6 +325,10 @@ def train(
         scaler = torch.cuda.amp.GradScaler(enabled=use_amp and amp_dtype == torch.float16)
 
     vocab = Vocabulary.from_config()
+    action_id_mask = torch.tensor(
+        [vocab.is_action_id(i) for i in range(vocab.size)],
+        dtype=torch.bool,
+    )
     model_cfg = load_model_config(PROJECT_ROOT / config.model_config)
     if model_cfg.block_size != config.block_size:
         raise ValueError("block_size must match between training.yaml and model.yaml")
@@ -485,6 +489,7 @@ def train(
                 batch,
                 pad_id=vocab.pad_id,
                 value_loss_weight=config.value_loss_weight,
+                action_id_mask=action_id_mask,
             )
 
         # DDP hooks all-reduce averaged gradients during this backward pass.
@@ -547,6 +552,7 @@ def train(
                 pad_id=vocab.pad_id,
                 value_loss_weight=config.value_loss_weight,
                 device=device,
+                action_id_mask=action_id_mask,
             )
             if csv_logger is not None:
                 csv_logger.log(
@@ -606,6 +612,7 @@ def train(
             pad_id=vocab.pad_id,
             value_loss_weight=config.value_loss_weight,
             device=device,
+            action_id_mask=action_id_mask,
         )
 
     final_tp = throughput.snapshot(baseline_single_gpu_sps=single_gpu_baseline) if is_main else None

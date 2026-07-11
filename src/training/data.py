@@ -61,7 +61,9 @@ class SelfPlayDataset(Dataset):
 
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
         hand = self.hands[index]
-        token_ids = hand["token_ids"]
+        perspectives = hand.get("player_perspectives") or {}
+        perspective = perspectives.get(self.perspective) or {}
+        token_ids = perspective.get("token_ids", hand["token_ids"])
         if not isinstance(token_ids, torch.Tensor):
             token_ids = torch.tensor(token_ids, dtype=torch.long)
         else:

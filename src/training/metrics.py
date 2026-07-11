@@ -26,12 +26,18 @@ def compute_losses(
     *,
     pad_id: int,
     value_loss_weight: float,
+    action_id_mask: torch.Tensor | None = None,
 ) -> LossOutput:
     action_logits, win_prob = model(batch.input_ids)
 
     shift_logits = action_logits[:, :-1, :].contiguous()
     shift_labels = batch.input_ids[:, 1:].contiguous()
     shift_mask = batch.attention_mask[:, 1:].contiguous()
+
+    # Cards / deals / specials are context only — CE only on action-token labels.
+    if action_id_mask is not None:
+        label_is_action = action_id_mask.to(shift_labels.device)[shift_labels]
+        shift_mask = shift_mask * label_is_action.float()
 
     per_token_loss = F.cross_entropy(
         shift_logits.view(-1, shift_logits.size(-1)),
@@ -92,6 +98,7 @@ def evaluate(
     pad_id: int,
     value_loss_weight: float,
     device: torch.device,
+    action_id_mask: torch.Tensor | None = None,
 ) -> dict[str, float]:
     model.eval()
     total = AverageMeter()
@@ -109,6 +116,7 @@ def evaluate(
             batch,
             pad_id=pad_id,
             value_loss_weight=value_loss_weight,
+            action_id_mask=action_id_mask,
         )
         batch_size = batch.input_ids.size(0)
         total.update(losses.total_loss.item(), batch_size)

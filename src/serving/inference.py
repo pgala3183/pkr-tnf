@@ -11,11 +11,8 @@ import onnxruntime as ort
 
 from poker_transformer.model.transformer import load_model_config
 from poker_transformer.serving.export_onnx import INT8_NAME, PROJECT_ROOT
-from poker_transformer.tokenizer.encode import (
-    _amount_for_size_label,
-    encode_action,
-    encode_hand_start,
-)
+from poker_transformer.tokenizer.encode import _amount_for_size_label
+from poker_transformer.tokenizer.hand_sequence import encode_hand_sequence
 from poker_transformer.tokenizer.vocab import Vocabulary
 
 DEFAULT_ONNX_PATH = PROJECT_ROOT / "checkpoints" / "onnx" / INT8_NAME
@@ -76,41 +73,40 @@ class OnnxPredictor:
         )
         self.input_name = self.session.get_inputs()[0].name
         self.output_names = [output.name for output in self.session.get_outputs()]
+        self.include_cards = (
+            self.vocab.config.include_cards
+            and self.vocab.size <= self.model_config.vocab_size
+        )
 
     def encode_hand(self, payload: dict[str, Any]) -> list[int]:
         """Build tokenizer ids from API hand-state payload."""
         initial_hero = payload.get("initial_hero_stack", payload["hero_stack"])
         initial_villain = payload.get("initial_villain_stack", payload["villain_stack"])
         big_blind = payload["big_blind"]
+        street = STREET_API_TO_TOKEN[payload["street"]]
 
-        token_ids = [
-            encode_hand_start(
-                {
-                    "hero_stack": initial_hero,
-                    "villain_stack": initial_villain,
-                    "big_blind": big_blind,
-                },
-                self.vocab,
-            )
+        actions = [
+            {
+                "street": item["street"],
+                "position": item["position"],
+                "action": item["action_type"],
+                "amount": item["amount"],
+                "pot_size": item["pot_before"],
+            }
+            for item in payload.get("action_history", [])
         ]
-
-        for item in payload.get("action_history", []):
-            token_ids.append(
-                encode_action(
-                    {"action_type": item["action_type"], "amount": item["amount"]},
-                    {
-                        "street": item["street"],
-                        "position": item["position"],
-                        "pot": max(float(item["pot_before"]), 1.0),
-                        "big_blind": big_blind,
-                        "hero_stack": item.get("hero_stack", initial_hero),
-                        "villain_stack": item.get("villain_stack", initial_villain),
-                    },
-                    self.vocab,
-                )
-            )
-
-        return token_ids
+        return encode_hand_sequence(
+            hero_stack=float(initial_hero),
+            villain_stack=float(initial_villain),
+            big_blind=float(big_blind),
+            actions=actions,
+            vocab=self.vocab,
+            hero_hole=payload.get("hole_cards") or None,
+            community_cards=payload.get("community_cards") or None,
+            include_cards=self.include_cards,
+            flush_street=street,
+            finalize=False,
+        )
 
     def legal_action_tokens(self, payload: dict[str, Any]) -> list[ParsedActionToken]:
         street = STREET_API_TO_TOKEN[payload["street"]]
@@ -124,7 +120,8 @@ class OnnxPredictor:
         raise_action = _find_valid_action(valid_actions, "raise")
 
         legal: list[ParsedActionToken] = []
-        for token_id in range(self.vocab.size):
+        vocab_limit = min(self.vocab.size, self.model_config.vocab_size)
+        for token_id in range(vocab_limit):
             token = self.vocab.token_for(token_id)
             parsed = self.vocab.parse_token(token)
             if parsed.get("kind") != "action":

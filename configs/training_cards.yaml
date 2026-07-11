@@ -1,0 +1,36 @@
+# Train on Transformer self-play shards with hole/board card tokens.
+
+data_dir: data/processed/self_play_transformer
+model_config: configs/model_cards.yaml
+
+batch_size: 128
+num_workers: 0
+block_size: 256
+
+learning_rate: 3.0e-4
+min_learning_rate: 3.0e-5
+weight_decay: 0.1
+betas: [0.9, 0.95]
+warmup_steps: 200
+max_steps: 5000
+gradient_clip: 1.0
+
+value_loss_weight: 0.5
+val_ratio: 0.1
+
+eval_interval: 100
+checkpoint_interval: 500
+keep_last_checkpoints: 3
+checkpoint_dir: checkpoints/cards
+
+use_wandb: false
+wandb_project: poker-transformer
+wandb_run_name: cards-transformer-sp
+
+log_csv: logs/training_cards.csv
+log_interval: 10
+
+seed: 42
+
+use_amp: true
+amp_dtype: bf16

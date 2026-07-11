@@ -1,0 +1,12 @@
+# Decoder-only poker action model with card/deal tokens in the vocab.
+
+n_layer: 6
+n_head: 8
+n_embd: 256
+block_size: 256
+dropout: 0.1
+# 235 action/specials + 3 DEAL_* + 52 CARD|* (append-only vs pre-card vocab)
+vocab_size: 290
+
+mlp_ratio: 4
+use_triton_kernels: false

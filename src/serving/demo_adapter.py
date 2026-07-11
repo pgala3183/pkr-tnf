@@ -43,6 +43,7 @@ class DemoHandState:
     hero_position: PositionToken
     action_history: list[DemoActionRecord] = field(default_factory=list)
     hole_cards: list[str] = field(default_factory=list)
+    community_cards: list[str] = field(default_factory=list)
     valid_actions: list[dict[str, Any]] = field(default_factory=list)
     pot_size: float = 0.0
     hero_stack: int = 0
@@ -146,6 +147,7 @@ def build_predict_payload(state: DemoHandState) -> dict[str, Any]:
             for item in state.action_history
         ],
         "hole_cards": list(state.hole_cards),
+        "community_cards": list(state.community_cards),
         "valid_actions": state.valid_actions,
         "pot_size": state.pot_size,
         "hero_stack": state.hero_stack,

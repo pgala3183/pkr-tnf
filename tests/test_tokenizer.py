@@ -21,7 +21,9 @@ def vocab() -> Vocabulary:
 
 
 def test_vocabulary_size_in_target_range(vocab: Vocabulary) -> None:
-    assert 150 <= vocab.size <= 250
+    # 235 action/specials + 3 DEAL_* + 52 CARD|*
+    assert 280 <= vocab.size <= 300
+    assert vocab.size == 290
 
 
 def test_round_trip_every_vocab_token(vocab: Vocabulary) -> None:
@@ -212,6 +214,42 @@ def test_size_bucket_label_midpoints(vocab: Vocabulary) -> None:
     assert size_bucket_label({"action_type": "BET", "amount": 5}, game_state, vocab) == "0-10%"
     assert size_bucket_label({"action_type": "BET", "amount": 17}, game_state, vocab) == "10-25%"
     assert size_bucket_label({"action_type": "ALL_IN", "amount": 999}, game_state, vocab) == "ALL_IN"
+
+
+def test_card_and_deal_tokens_appended(vocab: Vocabulary) -> None:
+    assert vocab.id_for("RIVER|BB|ALL_IN") == 234
+    assert vocab.token_for(235) == "DEAL_FLOP"
+    assert vocab.is_card("CARD|SA")
+    assert vocab.is_deal("DEAL_TURN")
+    assert not vocab.is_action("CARD|SA")
+
+
+def test_encode_hand_sequence_includes_hole_and_board(vocab: Vocabulary) -> None:
+    from poker_transformer.tokenizer.hand_sequence import encode_hand_sequence
+
+    actions = [
+        {"street": "PREFLOP", "position": "SB", "action": "RAISE", "amount": 60, "pot_size": 30},
+        {"street": "PREFLOP", "position": "BB", "action": "CALL", "amount": 40, "pot_size": 90},
+        {"street": "FLOP", "position": "BB", "action": "CHECK", "amount": 0, "pot_size": 120},
+    ]
+    ids = encode_hand_sequence(
+        hero_stack=1000,
+        villain_stack=1000,
+        big_blind=20,
+        actions=actions,
+        vocab=vocab,
+        hero_hole=["SA", "HK"],
+        community_cards=["C2", "D7", "H9", "ST", "CQ"],
+        include_cards=True,
+        finalize=True,
+    )
+    decoded = [decode_token(i, vocab) for i in ids]
+    assert decoded[0].startswith("HAND_START|")
+    assert decoded[1:3] == ["CARD|SA", "CARD|HK"]
+    assert "DEAL_FLOP" in decoded
+    flop_idx = decoded.index("DEAL_FLOP")
+    assert decoded[flop_idx : flop_idx + 4] == ["DEAL_FLOP", "CARD|C2", "CARD|D7", "CARD|H9"]
+    assert decoded[-1] == "HAND_END"
 
 
 if __name__ == "__main__":

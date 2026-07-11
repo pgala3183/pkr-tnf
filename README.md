@@ -14,7 +14,7 @@
 flowchart LR
   subgraph offline["Offline pipeline"]
     SP["Self-play<br/>(PyPokerEngine)"]
-    TOK["Tokenizer<br/>(235-token vocab)"]
+    TOK["Tokenizer<br/>(290-token vocab)"]
     TR["Training<br/>(6L decoder-only)"]
     CKPT["Checkpoint<br/>best.pt"]
     SP --> TOK --> TR --> CKPT
@@ -69,7 +69,7 @@ Each hand is a **sequence of discrete tokens**, not raw chip amounts or hole car
 
 3. **Special tokens** — `HAND_END`, `SHOWDOWN`, and `<PAD>` for batching.
 
-The vocabulary has **235 tokens** (`data/processed/vocab.json`). Average self-play hands are short (~6.6 tokens/hand), so sequences are far below the 256-token context window.
+The vocabulary has **290 tokens** (`data/processed/vocab.json`): 235 action/specials (ids stable) + 3 `DEAL_*` + 52 `CARD|*`. Current production checkpoints still use the action-only 235-d embedding; card-aware training uses `configs/model_cards.yaml`. Average self-play hands are short (~6.6 tokens/hand without cards), so sequences stay well below the 256-token context window.
 
 ### Decoder-only next-action prediction
 
@@ -329,6 +329,27 @@ python -m poker_transformer.training.self_play \
 
 Pre-generated shards are included under `data/processed/self_play/` (50k hands, `HonestPlayer` vs `RandomPlayer`).
 
+**Transformer self-play + cards** (next strength upgrade — run on the VM after the 10k bf16 roll-out):
+
+```bash
+# Tighten CIs on the current bf16 checkpoint
+python -m poker_transformer.eval.rollout \
+  --checkpoint checkpoints/postln_bf16/best.pt \
+  --hands 10000 --small-blind 20 --device cuda \
+  --output eval/results/baseline_eval.json
+
+# Generate data with Transformer as a player (cards encoded in shards)
+python -m poker_transformer.training.self_play \
+  --num-hands 50000 \
+  --bot-a transformer --bot-b honest \
+  --checkpoint checkpoints/postln_bf16/best.pt \
+  --device cuda --policy greedy \
+  --output-dir data/processed/self_play_transformer
+
+# Train a card-aware model on that data
+python -m poker_transformer.training.train --config configs/training_cards.yaml
+```
+
 ### Train
 
 ```bash
@@ -412,15 +433,15 @@ pytest tests/ -q
 Honest limitations of this v1:
 
 - **Heads-up only** — tokenizer positions are SB/BB; no multi-way pots, straddles, or tournament formats.
-- **No hole-card input** — the model sees action tokens only, not cards; strong play requires inferring ranges from betting lines.
-- **Self-play data, not real hand histories** — 50k hands of `HonestPlayer` vs `RandomPlayer` is cheap to generate but distribution-shifts vs human or solver opponents.
+- **Hole/board cards are in the tokenizer** — append-only `DEAL_*` + `CARD|*` tokens (vocab 290). Production bf16 checkpoints remain action-only (235-d); retrain with `configs/training_cards.yaml` on Transformer self-play data to use cards.
+- **Self-play data, not real hand histories** — 50k hands of `HonestPlayer` vs `RandomPlayer` is cheap to generate but distribution-shifts vs human or solver opponents. Prefer Transformer self-play (`--bot-a transformer`) for the next data generation pass.
 - **No ICM, rake, or multi-table** — chip EV only, single table, zero rake in engine config.
 - **Sizing buckets lose precision** — pot-relative bins compress continuous bet sizes; edge cases near bucket boundaries are blurry.
 - **Single-GPU training by default** — DDP is implemented but not yet benchmarked at scale; no FSDP / pipeline parallelism.
 - **Quantization validated on CPU ORT** — int8 task impact (bb/100 delta) not yet measured after quantization.
 - **Demo vs training blind structure differs** — demo uses 25/50 blinds; training self-play uses BB=20.
 
-With more resources: train on solver-labeled or human HH data, add card tokens (or a parallel card encoder), run proper bb/100 eval vs `FishPlayer` / `HonestPlayer` / CFR baselines, benchmark Triton + int8 on L4 with TensorRT EP, scale DDP to multi-node, and fine-tune with RL self-play against the current checkpoint.
+With more resources: train on solver-labeled or human HH data, finish card-aware retrain + 10k-hand bb/100 vs Fish/Honest/Random, benchmark Triton + int8 on L4 with TensorRT EP, scale DDP to multi-node, and fine-tune with RL self-play against the current checkpoint.
 
 ---
 

@@ -49,6 +49,15 @@ special_tokens:
   - HAND_END
   - SHOWDOWN
 
+# Appended AFTER action tokens so existing action ids (0..234) stay stable.
+deal_tokens:
+  - DEAL_FLOP
+  - DEAL_TURN
+  - DEAL_RIVER
+
+# When true, vocabulary includes 52 CARD|* tokens (PyPokerEngine card codes).
+include_cards: true
+
 pad_token: "<PAD>"
 
 # Actions that do not take a pot-relative size bucket.

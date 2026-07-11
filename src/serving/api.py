@@ -50,6 +50,7 @@ class PredictRequest(BaseModel):
     position: Literal["SB", "BB"]
     action_history: list[ActionHistoryItem] = Field(default_factory=list)
     hole_cards: list[str] = Field(default_factory=list)
+    community_cards: list[str] = Field(default_factory=list)
     valid_actions: list[ValidAction] = Field(min_length=1)
     pot_size: float = Field(gt=0)
     hero_stack: int = Field(ge=0)

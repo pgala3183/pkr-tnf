@@ -12,11 +12,8 @@ import torch.nn.functional as F
 from pypokerengine.players import BasePokerPlayer
 
 from poker_transformer.model.transformer import ModelConfig, PokerTransformer
-from poker_transformer.tokenizer.encode import (
-    _amount_for_size_label,
-    encode_action,
-    encode_hand_start,
-)
+from poker_transformer.tokenizer.encode import _amount_for_size_label
+from poker_transformer.tokenizer.hand_sequence import encode_hand_sequence
 from poker_transformer.tokenizer.vocab import Vocabulary
 
 STREET_MAP = {
@@ -37,6 +34,15 @@ class ParsedActionToken:
     token_id: int
     action_type: str
     size_bucket: str | None = None
+
+
+@dataclass
+class _ActionView:
+    street: str
+    position: str
+    action: str
+    amount: float
+    pot_size: float
 
 
 def _pot_size(round_state: dict[str, Any]) -> int:
@@ -138,10 +144,17 @@ class TransformerPlayer(BasePokerPlayer):
         if seed is not None:
             torch.manual_seed(seed)
 
+        # Only emit card/deal tokens when the checkpoint embedding covers them.
+        self.include_cards = (
+            self.vocab.config.include_cards
+            and self.vocab.size <= self.model_config.vocab_size
+        )
+
         self.uuid = ""
         self._big_blind = 0
         self._initial_stacks: dict[str, int] = {}
         self._player_names: dict[str, str] = {}
+        self._hole_cards: list[str] = []
 
     def declare_action(
         self,
@@ -149,7 +162,8 @@ class TransformerPlayer(BasePokerPlayer):
         hole_card: list[str],
         round_state: dict[str, Any],
     ) -> tuple[str, int]:
-        del hole_card  # hole cards are not part of the action tokenizer vocabulary yet.
+        if hole_card:
+            self._hole_cards = list(hole_card)
 
         token_ids = self._encode_hand_so_far(round_state)
         if len(token_ids) > self.model_config.block_size:
@@ -181,7 +195,8 @@ class TransformerPlayer(BasePokerPlayer):
         hole_card: list[str],
         seats: list[dict[str, Any]],
     ) -> None:
-        del round_count, hole_card
+        del round_count
+        self._hole_cards = list(hole_card)
         self._initial_stacks = {seat["name"]: int(seat["stack"]) for seat in seats}
         self._player_names = {seat["uuid"]: seat["name"] for seat in seats}
 
@@ -200,6 +215,7 @@ class TransformerPlayer(BasePokerPlayer):
         del winners, hand_info, round_state
         self._initial_stacks = {}
         self._player_names = {}
+        self._hole_cards = []
 
     def _encode_hand_so_far(self, round_state: dict[str, Any]) -> list[int]:
         hero_name = self._player_names.get(self.uuid)
@@ -208,29 +224,35 @@ class TransformerPlayer(BasePokerPlayer):
 
         names = list(self._initial_stacks.keys())
         if len(names) == 2:
-            hero_stack = self._initial_stacks[names[0]]
-            villain_stack = self._initial_stacks[names[1]]
+            hero_stack = float(self._initial_stacks[names[0]])
+            villain_stack = float(self._initial_stacks[names[1]])
             if hero_name == names[1]:
                 hero_stack, villain_stack = villain_stack, hero_stack
         else:
-            hero_stack = self._initial_stacks.get(hero_name, 1000)
-            villain_stack = max(self._initial_stacks.values(), default=1000)
+            hero_stack = float(self._initial_stacks.get(hero_name, 1000))
+            villain_stack = float(max(self._initial_stacks.values(), default=1000))
 
-        token_ids = [
-            encode_hand_start(
-                {
-                    "hero_stack": hero_stack,
-                    "villain_stack": villain_stack,
-                    "big_blind": self._big_blind,
-                },
-                self.vocab,
-            )
-        ]
+        actions = self._actions_from_round_state(round_state)
+        street = STREET_MAP[round_state["street"]]
+        return encode_hand_sequence(
+            hero_stack=hero_stack,
+            villain_stack=villain_stack,
+            big_blind=float(self._big_blind),
+            actions=actions,
+            vocab=self.vocab,
+            hero_hole=self._hole_cards,
+            community_cards=list(round_state.get("community_card", [])),
+            include_cards=self.include_cards,
+            flush_street=street,
+            finalize=False,
+        )
 
+    def _actions_from_round_state(self, round_state: dict[str, Any]) -> list[_ActionView]:
         stacks = dict(self._initial_stacks)
         pot = 0.0
         aggression_on_street: set[str] = set()
         logged_action_keys: set[tuple[str, str, str, float]] = set()
+        actions: list[_ActionView] = []
 
         for street_key in ("preflop", "flop", "turn", "river"):
             street = STREET_MAP[street_key]
@@ -296,25 +318,18 @@ class TransformerPlayer(BasePokerPlayer):
                 if normalized in {"BET", "RAISE"}:
                     aggression_on_street.add(street)
 
-                hero_stack_now, villain_stack_now = self._hero_villain_stacks_from_dict(stacks, hero_name)
-                token_ids.append(
-                    encode_action(
-                        {"action_type": normalized, "amount": wager_amount},
-                        {
-                            "street": street,
-                            "position": position,
-                            "pot": pre_pot,
-                            "big_blind": self._big_blind,
-                            "hero_stack": hero_stack_now,
-                            "villain_stack": villain_stack_now,
-                        },
-                        self.vocab,
+                actions.append(
+                    _ActionView(
+                        street=street,
+                        position=position,
+                        action=normalized,
+                        amount=wager_amount,
+                        pot_size=pre_pot,
                     )
                 )
-
                 stacks[player_name] = max(stacks.get(player_name, 0) - int(wager_amount), 0)
 
-        return token_ids
+        return actions
 
     def _hero_villain_stacks_from_dict(
         self,
@@ -347,8 +362,10 @@ class TransformerPlayer(BasePokerPlayer):
         call_action = _find_valid_action(valid_actions, "call")
         raise_action = _find_valid_action(valid_actions, "raise")
 
+        # Only score action ids that fit the checkpoint embedding table.
+        vocab_limit = min(self.vocab.size, self.model_config.vocab_size)
         legal: list[ParsedActionToken] = []
-        for token_id in range(self.vocab.size):
+        for token_id in range(vocab_limit):
             token = self.vocab.token_for(token_id)
             parsed = self.vocab.parse_token(token)
             if parsed.get("kind") != "action":
