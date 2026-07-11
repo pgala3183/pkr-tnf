@@ -1,35 +1,42 @@
 {
-  "_comment": "Populate after running the engine roll-out eval harness. README reads this file.",
-  "eval_date": null,
-  "checkpoint": "checkpoints/best.pt",
+  "eval_date": "2026-07-11T10:23:06.181816+00:00",
+  "checkpoint": "checkpoints/postln/best.pt",
   "hands_per_matchup": 10000,
   "big_blind": 20,
-  "starting_stack_bb": 100,
+  "small_blind": 10,
+  "starting_stack_bb": 50.0,
   "confidence_level": 0.95,
+  "policy": "greedy",
+  "device": "cuda",
+  "seed": 0,
+  "note": "SB=10/BB=20 (50bb). Training self-play used SB=20/BB=40 (25bb). Re-run with --small-blind 20 for exact match.",
   "opponents": [
     {
       "name": "FishPlayer",
       "description": "Always calls (PyPokerEngine tutorial bot)",
-      "bb_per_100": null,
-      "ci_low": null,
-      "ci_high": null,
-      "std_error": null
+      "bb_per_100": -16.043,
+      "ci_low": -87.102,
+      "ci_high": 55.016,
+      "std_error": 36.255,
+      "hands": 10000
     },
     {
       "name": "HonestPlayer",
       "description": "Monte Carlo equity threshold bot",
-      "bb_per_100": null,
-      "ci_low": null,
-      "ci_high": null,
-      "std_error": null
+      "bb_per_100": -167.365,
+      "ci_low": -201.604,
+      "ci_high": -133.126,
+      "std_error": 17.469,
+      "hands": 10000
     },
     {
       "name": "RandomPlayer",
       "description": "Uniform random legal action",
-      "bb_per_100": null,
-      "ci_low": null,
-      "ci_high": null,
-      "std_error": null
+      "bb_per_100": 1398.136,
+      "ci_low": 1343.189,
+      "ci_high": 1453.083,
+      "std_error": 28.035,
+      "hands": 10000
     }
   ]
 }

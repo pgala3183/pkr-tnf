@@ -89,11 +89,13 @@ Win rates vs baseline bots (bb/100, hero = Transformer). Values are read from [`
 
 | Opponent | bb/100 | 95% CI | Notes |
 |----------|--------|--------|-------|
-| FishPlayer | _TBD_ | [_TBD_, _TBD_] | Always calls |
-| HonestPlayer | _TBD_ | [_TBD_, _TBD_] | MC equity threshold |
-| RandomPlayer | _TBD_ | [_TBD_, _TBD_] | Uniform random legal action |
+| FishPlayer | **−16.0** | [−87.1, +55.0] | Always calls — CI includes 0 (not significant) |
+| HonestPlayer | **−167.4** | [−201.6, −133.1] | MC equity bot — clearly losing |
+| RandomPlayer | **+1398.1** | [+1343.2, +1453.1] | Uniform random — crushing |
 
-**Eval settings:** independent 1-round hands with fresh 100bb stacks, SB=10 / BB=20 (matches training), hero seat alternated, greedy policy.
+Measured on L4, 10k hands/matchup, greedy policy, `checkpoints/postln/best.pt` (SB=10/BB=20, 50bb stacks — see note below). Smoke (200 hands) had huge CIs; 10k hands stabilize the estimate.
+
+**Reading:** the model **destroys Random** (as expected from training on Honest×Random patterns) but **loses to Honest** and is **≈break-even vs Fish** (calling station). That matches an action-only imitator of weak self-play data: it learned to punish noise, not to beat equity-aware play.
 
 ```bash
 # Smoke (fast): ~2–4 hands/sec on CPU; use cuda if available
