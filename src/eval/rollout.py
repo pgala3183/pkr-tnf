@@ -229,7 +229,7 @@ def run_rollout_eval(
     opponents: list[OpponentName] | None = None,
     hands_per_matchup: int = 1000,
     initial_stack: int = 1000,
-    small_blind: int = 10,
+    small_blind: int = 20,
     device: str = "cpu",
     policy: str = "greedy",
     seed: int = 0,
@@ -310,7 +310,12 @@ def main() -> None:
         choices=["FishPlayer", "HonestPlayer", "RandomPlayer"],
     )
     parser.add_argument("--initial-stack", type=int, default=1000)
-    parser.add_argument("--small-blind", type=int, default=10, help="SB chips; BB = 2×SB")
+    parser.add_argument(
+        "--small-blind",
+        type=int,
+        default=20,
+        help="SB chips; BB = 2×SB (default 20 matches self-play training)",
+    )
     parser.add_argument("--device", type=str, default="cpu", help="cpu or cuda")
     parser.add_argument("--policy", choices=["greedy", "sampled"], default="greedy")
     parser.add_argument("--seed", type=int, default=0)
